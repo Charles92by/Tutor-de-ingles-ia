@@ -23,15 +23,36 @@ except:
     st.error("❌ ERROR CRÍTICO: No se encuentran las claves en Secrets.")
     st.stop()
 
-# --- 3. CONFIGURACIÓN GEMINI (INTENTO DE CONEXIÓN ROBUSTA) ---
-try:
-    genai.configure(api_key=GOOGLE_API_KEY)
-    
-    # CAMBIO: Usamos 'gemini-1.5-flash' sin el prefijo 'models/' que a veces da error en la nube
-    # Si este falla, probaremos 'gemini-pro'
-    model = genai.GenerativeModel('gemini-1.5-flash')
-except Exception as e:
-    st.error(f"❌ Error al configurar Gemini: {e}")
+# --- 3. CONEXIÓN GEMINI "AUTO-REPARABLE" 🛠️ ---
+# Esta sección prueba modelos uno por uno hasta encontrar el que funciona en la nube
+active_model = None
+connection_status = st.sidebar.empty()
+
+possible_models = [
+    'models/gemini-2.5-flash',  # El más nuevo (tu favorito)
+    'gemini-2.5-flash',         # Variación de nombre
+    'models/gemini-1.5-flash',  # El estándar actual
+    'gemini-1.5-flash',         # Variación estándar
+    'gemini-pro'                # El clásico (si todo falla)
+]
+
+genai.configure(api_key=GOOGLE_API_KEY)
+
+# Probamos conectar
+for model_name in possible_models:
+    try:
+        temp_model = genai.GenerativeModel(model_name)
+        # Hacemos una prueba silenciosa para ver si responde
+        temp_model.generate_content("Test") 
+        active_model = temp_model
+        connection_status.success(f"✅ Conectado a: {model_name}")
+        break # Si funciona, dejamos de buscar
+    except:
+        continue # Si falla, probamos el siguiente
+
+if not active_model:
+    st.error("❌ ERROR FATAL: Ningún modelo de Gemini respondió. Revisa tu API KEY o actualiza requirements.txt.")
+    st.stop()
 
 # --- 4. FUNCIONES AUDIO ---
 def generar_audio_resp(text):
@@ -53,7 +74,6 @@ def process_audio_file(file_path, reference_text=None):
         audio_config = speechsdk.audio.AudioConfig(filename=file_path)
         
         if reference_text:
-            # Modo Evaluación
             pronunciation_config = speechsdk.PronunciationAssessmentConfig(
                 reference_text=reference_text,
                 grading_system=speechsdk.PronunciationAssessmentGradingSystem.HundredMark,
@@ -63,14 +83,13 @@ def process_audio_file(file_path, reference_text=None):
             pronunciation_config.apply_to(recognizer)
             return recognizer.recognize_once()
         else:
-            # Modo Chat
             recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
             return recognizer.recognize_once()
     except Exception as e:
         st.error(f"Error Azure: {e}")
         return None
 
-# --- 5. CEREBRO IA (CON DETECTOR DE ERRORES) ---
+# --- 5. CEREBRO IA ---
 def get_chat_response(history, user_input):
     prompt = f"""
     You are a British English tutor.
@@ -82,27 +101,25 @@ def get_chat_response(history, user_input):
     3. PLAIN TEXT ONLY. NO JSON.
     """
     try:
-        response = model.generate_content(prompt)
+        # Usamos el modelo activo que encontramos antes
+        response = active_model.generate_content(prompt)
         return response.text
     except Exception as e:
-        # AQUÍ ESTÁ EL CAMBIO: Te mostrará el error real en pantalla
-        st.error(f"⚠️ ERROR GEMINI DETALLADO: {e}") 
-        return "System Error (Check logs above)"
+        return f"Error IA: {e}"
 
 def get_pronunciation_tips(text, errors):
     prompt = f"User said: '{text}'. Errors: {', '.join(errors)}. Give brief pronunciation tips (IPA)."
     try:
-        response = model.generate_content(prompt)
+        response = active_model.generate_content(prompt)
         return response.text
     except Exception as e:
-        st.error(f"⚠️ ERROR GEMINI DETALLADO: {e}")
         return "Check pronunciation."
 
 # --- 6. INTERFAZ ---
 st.title("🇬🇧 British AI Tutor")
 
 with st.sidebar:
-    st.header("Configuración")
+    st.divider()
     modo = st.radio("Modo:", ["🎯 Entrenador", "💬 Conversación"])
     st.divider()
     if st.button("🔄 Reiniciar"):
