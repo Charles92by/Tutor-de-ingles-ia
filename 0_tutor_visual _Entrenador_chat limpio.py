@@ -1,6 +1,7 @@
 import streamlit as st
 import azure.cognitiveservices.speech as speechsdk
-import google.generativeai as genai
+import requests  # <--- USAMOS ESTO PARA SALTARNOS LA LIBRERÍA VIEJA
+import json
 from audio_recorder_streamlit import audio_recorder
 import os
 
@@ -23,22 +24,41 @@ except:
     st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. CONEXIÓN (RESTAURANDO LA QUE FUNCIONÓ) ---
-try:
-    genai.configure(api_key=GOOGLE_API_KEY)
+# --- 3. CONEXIÓN DIRECTA (BYPASS) PARA EVITAR LÍMITE DE 20 MENSAJES 🚀 ---
+def query_gemini_direct(prompt_text):
+    """
+    Se conecta directamente a la API de Google sin usar la librería de Python.
+    Fuerza el uso de gemini-1.5-flash para tener 1500 peticiones diarias.
+    """
+    # URL directa al modelo 1.5 Flash
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GOOGLE_API_KEY}"
     
-    # ÚNICO MODELO QUE FUNCIONÓ EN TU CUENTA
-    # No cambiamos esto por nada del mundo.
-    active_model = genai.GenerativeModel('models/gemini-flash-latest')
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "contents": [{
+            "parts": [{"text": prompt_text}]
+        }],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 150
+        }
+    }
     
-except Exception as e:
-    st.error(f"❌ Error Configuración Gemini: {e}")
-    st.stop()
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(data))
+        
+        if response.status_code == 200:
+            return response.json()['candidates'][0]['content']['parts'][0]['text']
+        else:
+            # Si falla, devolvemos el error técnico para verlo
+            return f"Error Google ({response.status_code}): {response.text}"
+    except Exception as e:
+        return f"Error Conexión: {str(e)}"
 
-# --- 4. FUNCIONES AUDIO (MEJORADAS PARA ESCUCHAR MEJOR) ---
+# --- 4. FUNCIONES AUDIO (Con Paciencia de 3 seg) ---
 def generar_audio_resp(text):
     try:
-        if "ERROR" in text: return
+        if "Error" in text: return
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_synthesis_voice_name = "en-GB-RyanNeural"
         audio_config = speechsdk.audio.AudioOutputConfig(filename="output_ghost.wav")
@@ -53,9 +73,7 @@ def process_audio_file(file_path, reference_text=None):
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_recognition_language = "en-GB"
         
-        # --- AQUÍ ESTÁ EL ARREGLO PARA QUE TE ENTIENDA ---
-        # Le decimos a Azure que espere 3000ms (3 segundos) de silencio antes de cortar.
-        # Esto soluciona el problema de que "no capta frases largas".
+        # --- PACIENCIA AZURE: 3 SEGUNDOS ---
         speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "3000")
         
         audio_config = speechsdk.audio.AudioConfig(filename=file_path)
@@ -74,25 +92,27 @@ def process_audio_file(file_path, reference_text=None):
         st.error(f"Error Azure: {e}")
         return None
 
-# --- 5. CEREBRO IA ---
+# --- 5. CEREBRO IA (Usando el Bypass) ---
 def get_chat_response(history, user_input):
     prompt = f"""
-    You are a British English tutor. User said: "{user_input}".
-    History: {history}
-    1. Reply naturally in English.
-    2. Keep it simple.
+    You are a friendly British English tutor.
+    Conversation History: {history}
+    User just said: "{user_input}"
+    
+    Instructions:
+    1. If transcription is slightly wrong, guess the context.
+    2. Correct grammar gently inside your reply.
+    3. Keep it short. PLAIN TEXT ONLY.
     """
-    try: 
-        return active_model.generate_content(prompt).text
-    except Exception as e: 
-        return f"ERROR IA: {e}"
+    return query_gemini_direct(prompt)
 
 def get_pronunciation_tips(text, errors):
-    try: return active_model.generate_content(f"Tips for pronouncing: {errors}").text
-    except: return "Check pronunciation."
+    prompt = f"User said: '{text}'. Errors: {', '.join(errors)}. Give 1 sentence with pronunciation tips (IPA)."
+    return query_gemini_direct(prompt)
 
-# --- 6. INTERFAZ (BOTÓN ESTABLE) ---
+# --- 6. INTERFAZ ---
 st.title("🇬🇧 British AI Tutor")
+st.caption("🚀 Motor: Gemini 1.5 Flash (Conexión Directa)")
 
 with st.sidebar:
     st.divider()
@@ -104,8 +124,6 @@ with st.sidebar:
         st.session_state.manual_reset_counter += 1
         st.rerun()
 
-# Clave estable: Solo cambia si TÚ le das a reiniciar manualmente.
-# Esto evita que el botón desaparezca o parpadee al hablar.
 stable_key = f"recorder_{modo}_{st.session_state.manual_reset_counter}"
 
 if modo == "🎯 Entrenador":
@@ -115,7 +133,6 @@ if modo == "🎯 Entrenador":
     
     audio_bytes = audio_recorder(text="", recording_color="#e8b62c", neutral_color="#6aa36f", icon_size="2x", key=stable_key)
     
-    # Solo procesamos si el audio es DIFERENTE al anterior
     if audio_bytes and audio_bytes != st.session_state.last_processed_audio:
         st.session_state.last_processed_audio = audio_bytes
         st.audio(audio_bytes, format="audio/wav")
@@ -157,14 +174,15 @@ else:
         st.caption("Procesando audio...")
         with open("temp.wav", "wb") as f: f.write(chat_audio)
         
-        # Procesamos con la nueva configuración de paciencia (3 seg)
         res = process_audio_file("temp.wav")
         
         if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
             user_text = res.text
             st.session_state.messages.append({"role": "user", "content": user_text})
             historial = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
+            
             bot_reply = get_chat_response(historial, user_text)
+            
             st.session_state.messages.append({"role": "assistant", "content": bot_reply})
             generar_audio_resp(bot_reply)
             st.rerun()
