@@ -7,14 +7,10 @@ import os
 # --- 1. CONFIGURACIÓN INICIAL Y ESTADO ---
 st.set_page_config(page_title="British AI Tutor", page_icon="🇬🇧")
 
-# Inicializar variables de estado
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat."}]
 if "last_spoken_audio" not in st.session_state:
     st.session_state.last_spoken_audio = ""
-
-# --- LA SOLUCIÓN AL BOTÓN DESAPARECIDO ---
-# Usamos un contador para forzar que el botón de grabar se renueve siempre
 if "recorder_key" not in st.session_state:
     st.session_state.recorder_key = 0
 
@@ -27,12 +23,13 @@ except:
     st.error("❌ Faltan las claves en 'Secrets'.")
     st.stop()
 
-# --- 3. CONFIGURACIÓN GEMINI ---
+# --- 3. CONFIGURACIÓN GEMINI (CAMBIO AQUÍ) ---
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
-    model = genai.GenerativeModel('models/gemini-2.5-flash')
+    # CAMBIO: Usamos 1.5-flash que es más estable en la nube que el 2.5
+    model = genai.GenerativeModel('gemini-1.5-flash')
 except Exception as e:
-    st.warning(f"Error Gemini: {e}")
+    st.error(f"Error conectando con Gemini: {e}")
 
 # --- 4. FUNCIONES DE AUDIO ---
 
@@ -54,26 +51,30 @@ def generar_audio_resp(text):
 
 def process_audio_file(file_path, reference_text=None):
     """Procesa el audio grabado"""
-    speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
-    speech_config.speech_recognition_language = "en-GB"
-    audio_config = speechsdk.audio.AudioConfig(filename=file_path)
-    
-    if reference_text:
-        # MODO EVALUACIÓN
-        pronunciation_config = speechsdk.PronunciationAssessmentConfig(
-            reference_text=reference_text,
-            grading_system=speechsdk.PronunciationAssessmentGradingSystem.HundredMark,
-            granularity=speechsdk.PronunciationAssessmentGranularity.Phoneme
-        )
-        recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
-        pronunciation_config.apply_to(recognizer)
-        return recognizer.recognize_once()
-    else:
-        # MODO CHAT
-        recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
-        return recognizer.recognize_once()
+    try:
+        speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
+        speech_config.speech_recognition_language = "en-GB"
+        audio_config = speechsdk.audio.AudioConfig(filename=file_path)
+        
+        if reference_text:
+            # MODO EVALUACIÓN
+            pronunciation_config = speechsdk.PronunciationAssessmentConfig(
+                reference_text=reference_text,
+                grading_system=speechsdk.PronunciationAssessmentGradingSystem.HundredMark,
+                granularity=speechsdk.PronunciationAssessmentGranularity.Phoneme
+            )
+            recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
+            pronunciation_config.apply_to(recognizer)
+            return recognizer.recognize_once()
+        else:
+            # MODO CHAT
+            recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
+            return recognizer.recognize_once()
+    except Exception as e:
+        st.error(f"Error Azure: {e}")
+        return None
 
-# --- 5. CEREBRO IA ---
+# --- 5. CEREBRO IA (CAMBIO AQUÍ) ---
 def get_chat_response(history, user_input):
     prompt = f"""
     Eres un tutor de inglés británico.
@@ -87,15 +88,18 @@ def get_chat_response(history, user_input):
     try:
         response = model.generate_content(prompt)
         return response.text
-    except:
-        return "I can't think right now."
+    except Exception as e:
+        # CAMBIO: Mostramos el error real en pantalla roja para que sepas qué pasa
+        st.error(f"❌ Error Gemini: {e}") 
+        return f"Error técnico: {e}"
 
 def get_pronunciation_tips(text, errors):
     prompt = f"Usuario dijo: '{text}'. Falló en: {', '.join(errors)}. Dame consejo breve (texto plano)."
     try:
         response = model.generate_content(prompt)
         return response.text
-    except:
+    except Exception as e:
+        st.error(f"❌ Error Gemini: {e}")
         return "Check pronunciation."
 
 # --- 6. INTERFAZ GRÁFICA ---
@@ -110,7 +114,7 @@ with st.sidebar:
     if st.button("🔄 Reiniciar Todo"):
         st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat."}]
         st.session_state.last_spoken_audio = ""
-        st.session_state.recorder_key += 1 # Forzar nuevo botón
+        st.session_state.recorder_key += 1
         st.rerun()
 
 # === MODO 1: ENTRENADOR ===
@@ -119,7 +123,6 @@ if modo == "🎯 Entrenador":
     frase = st.selectbox("Frase:", ["I would like a bottle of water please.", "The weather in London is unpredictable."])
     st.info(f"📖 Lee: **{frase}**")
     
-    # Usamos la clave dinámica
     key_entrenador = f"trainer_{st.session_state.recorder_key}"
     audio_bytes_tr = audio_recorder(text="", recording_color="#e8b62c", neutral_color="#6aa36f", icon_size="2x", key=key_entrenador)
     
@@ -145,7 +148,6 @@ if modo == "🎯 Entrenador":
                 st.success("Perfect!")
                 generar_audio_resp("Excellent pronunciation!")
         
-        # TRUCO FINAL: Cambiamos la clave para que al recargar salga un botón NUEVO
         st.session_state.recorder_key += 1
         st.rerun()
 
@@ -160,7 +162,6 @@ else:
     st.write("---")
     st.write("👇 **Pulsa para hablar:**")
     
-    # Usamos la clave dinámica aquí también
     key_chat = f"chat_{st.session_state.recorder_key}"
     chat_audio = audio_recorder(text="", recording_color="#ff4b4b", neutral_color="#6aa36f", icon_size="2x", key=key_chat)
     
@@ -173,24 +174,17 @@ else:
             
         if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
             user_text = res.text
-            
-            # Guardamos mensajes
             st.session_state.messages.append({"role": "user", "content": user_text})
             
-            # Pensamos respuesta
             historial = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
             bot_reply = get_chat_response(historial, user_text)
             st.session_state.messages.append({"role": "assistant", "content": bot_reply})
             
-            # IMPORTANTE: Cambiamos la clave para destruir el botón usado y poner uno nuevo
             st.session_state.recorder_key += 1
             st.rerun()
 
-    # Reproducir audio del último mensaje (si es del bot y no se ha dicho ya)
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
         last_msg = st.session_state.messages[-1]["content"]
-        
-        # Comprobación simple para no repetir
         if st.session_state.last_spoken_audio != last_msg:
             st.session_state.last_spoken_audio = last_msg
             generar_audio_resp(last_msg)
