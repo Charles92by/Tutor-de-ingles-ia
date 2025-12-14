@@ -18,7 +18,6 @@ if "manual_reset_counter" not in st.session_state:
 # --- 2. CLAVES ---
 try:
     raw_key = st.secrets["GOOGLE_API_KEY"]
-    # Limpieza de seguridad por si hay espacios
     GOOGLE_API_KEY = raw_key.strip().replace('"', '').replace("'", "")
     AZURE_KEY = st.secrets["AZURE_KEY"]
     AZURE_REGION = st.secrets["AZURE_REGION"]
@@ -26,83 +25,77 @@ except:
     st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. AUTO-DESCUBRIMIENTO DE MODELOS (LA SOLUCIÓN FINAL) 🕵️‍♂️ ---
+# --- 3. AUTO-DESCUBRIMIENTO DE MODELOS 🕵️‍♂️ ---
 def get_valid_model():
-    """
-    Pregunta a Google qué modelos tiene disponibles la llave y elige uno válido.
-    """
     if "final_model_id" in st.session_state:
         return st.session_state.final_model_id
 
-    st.info("🔍 Analizando tu cuenta de Google para encontrar un modelo válido...")
+    st.info("🔍 Buscando el mejor modelo para tu cuenta...")
     
-    # 1. Pedimos la lista ("El Menú")
     try:
+        # 1. Obtenemos lista de modelos
         url_list = f"https://generativelanguage.googleapis.com/v1beta/models?key={GOOGLE_API_KEY}"
         response = requests.get(url_list)
-        
-        if response.status_code != 200:
-            st.error(f"❌ Error al listar modelos: {response.text}")
-            st.stop()
-            
         data = response.json()
         available_models = []
         
-        # Filtramos solo los que sirven para chatear (generateContent)
         if 'models' in data:
             for m in data['models']:
                 if 'generateContent' in m['supportedGenerationMethods']:
-                    available_models.append(m['name']) # ej: "models/gemini-pro"
+                    available_models.append(m['name'])
         
-        if not available_models:
-            st.error("❌ Tu llave es válida pero no tiene acceso a NINGÚN modelo. ¿Has activado la API en Google Cloud?")
-            st.stop()
-            
-        # 2. Probamos cuál funciona (Priorizamos Flash y Pro)
-        # Reordenamos la lista para probar los mejores primero
+        # 2. Prioridad de prueba (Flash suele ser el más rápido y libre)
         priority_order = [
             "models/gemini-1.5-flash", 
             "models/gemini-1.5-flash-001",
-            "models/gemini-1.5-flash-002",
             "models/gemini-1.5-flash-8b",
             "models/gemini-pro",
             "models/gemini-1.0-pro"
         ]
         
-        # Ordenamos la lista disponible según nuestra prioridad
         sorted_models = sorted(available_models, key=lambda x: priority_order.index(x) if x in priority_order else 999)
 
         for model_name in sorted_models:
-            # Prueba de fuego: Intentar generar un "Hola"
             test_url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GOOGLE_API_KEY}"
             test_data = {"contents": [{"parts": [{"text": "Hi"}]}]}
             try:
                 r = requests.post(test_url, headers={"Content-Type": "application/json"}, data=json.dumps(test_data))
                 if r.status_code == 200:
                     st.session_state.final_model_id = model_name
-                    st.success(f"✅ ¡MODELO ENCONTRADO! Usando: **{model_name}**")
+                    st.success(f"✅ Conectado a: **{model_name}**")
                     return model_name
-            except:
-                continue
+            except: continue
         
-        st.error("❌ Se encontraron modelos, pero todos fallaron al probarlos (posible error 429 de cuota).")
-        st.write("Modelos vistos:", available_models)
+        st.error("❌ No se encontraron modelos disponibles.")
         st.stop()
 
     except Exception as e:
-        st.error(f"Error de conexión fatal: {e}")
+        st.error(f"Error de conexión: {e}")
         st.stop()
 
-# EJECUTAMOS EL AUTO-DESCUBRIMIENTO
 ACTIVE_MODEL = get_valid_model()
 
-# --- 4. FUNCIÓN PARA LLAMAR AL MODELO ELEGIDO ---
+# --- 4. CEREBRO IA (MEJORADO Y ESTABILIZADO) 🧠 ---
 def query_gemini(prompt_text):
     url = f"https://generativelanguage.googleapis.com/v1beta/{ACTIVE_MODEL}:generateContent?key={GOOGLE_API_KEY}"
     headers = {"Content-Type": "application/json"}
+    
+    # AQUÍ ESTÁ EL CAMBIO IMPORTANTE:
+    # 1. maxOutputTokens: 400 (antes 150) -> Para que no se corte.
+    # 2. temperature: 0.3 (antes 0.7) -> Para que sea más centrado y no diga tonterías.
     data = {
         "contents": [{"parts": [{"text": prompt_text}]}],
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 150}
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 400
+        },
+        # Filtros de seguridad desactivados para evitar bloqueos tontos
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
     }
     try:
         response = requests.post(url, headers=headers, data=json.dumps(data))
@@ -113,7 +106,7 @@ def query_gemini(prompt_text):
     except Exception as e:
         return f"Error Red: {str(e)}"
 
-# --- 5. FUNCIONES AUDIO (Con arreglo de pausas) ---
+# --- 5. AUDIO (PACIENCIA 3s) ---
 def generar_audio_resp(text):
     if "Error" in text: return
     try:
@@ -130,7 +123,7 @@ def process_audio_file(file_path):
     try:
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_recognition_language = "en-GB"
-        # 3000ms de espera para que no corte frases largas
+        # 3 segundos de espera antes de cortar
         speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "3000")
         
         audio_config = speechsdk.audio.AudioConfig(filename=file_path)
@@ -138,23 +131,41 @@ def process_audio_file(file_path):
         return recognizer.recognize_once()
     except: return None
 
-# --- 6. CEREBRO IA ---
-def get_chat_response(history, user_input):
-    prompt = f"Act as a British English tutor. Keep replies short (max 2 sentences). History: {history}. User: {user_input}"
+# --- 6. PROMPT INGENIERÍA ---
+def get_chat_response(history_list, user_input):
+    # Formateamos el historial para que la IA entienda quién es quién
+    formatted_history = ""
+    for msg in history_list:
+        role = "Tutor" if msg['role'] == "assistant" else "Student"
+        formatted_history += f"{role}: {msg['content']}\n"
+
+    prompt = f"""
+    Act as a friendly, patient British English tutor.
+    
+    CONVERSATION HISTORY:
+    {formatted_history}
+    
+    CURRENT INPUT (Student): "{user_input}"
+    
+    INSTRUCTIONS:
+    1. If the Student's input is incomplete or weird (due to audio errors), guess what they meant or ask for clarification politely.
+    2. Correct any grammar mistakes gently in your response.
+    3. Respond naturally to continue the conversation.
+    4. Keep your response complete but concise (2-3 sentences max).
+    5. Do not cut off your sentences.
+    """
     return query_gemini(prompt)
 
 # --- 7. INTERFAZ ---
 st.title("🇬🇧 British AI Tutor")
-st.caption(f"🤖 Conectado a: {ACTIVE_MODEL}")
 
 with st.sidebar:
     st.divider()
     if st.button("🔄 Reiniciar"):
-        st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat."}]
         st.session_state.last_processed_audio = b""
         st.session_state.manual_reset_counter += 1
-        # Forzamos re-escanear si se reinicia
-        if "final_model_id" in st.session_state: del st.session_state.final_model_id
+        # No borramos el modelo para no perder tiempo re-escaneando
         st.rerun()
 
 stable_key = f"recorder_main_{st.session_state.manual_reset_counter}"
@@ -171,17 +182,21 @@ if chat_audio and chat_audio != st.session_state.last_processed_audio:
         
         if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
             user_text = res.text
+            # Feedback visual de lo que entendió
+            st.toast(f"🗣️ Oído: {user_text}") 
+            
             st.session_state.messages.append({"role": "user", "content": user_text})
             
-            historial = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
-            bot_reply = get_chat_response(historial, user_text)
+            # Pasamos la lista completa de mensajes
+            bot_reply = get_chat_response(st.session_state.messages, user_text)
             
             st.session_state.messages.append({"role": "assistant", "content": bot_reply})
             generar_audio_resp(bot_reply)
             st.rerun()
         else:
-            st.warning("No se entendió el audio.")
+            st.warning("😓 No te he entendido bien. Inténtalo de nuevo.")
 
+# Mostrar chat
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
