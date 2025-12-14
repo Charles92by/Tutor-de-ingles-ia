@@ -4,7 +4,7 @@ import google.generativeai as genai
 from audio_recorder_streamlit import audio_recorder
 import os
 
-# --- 1. CONFIGURACIÓN INICIAL Y ESTADO ---
+# --- 1. CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="British AI Tutor", page_icon="🇬🇧")
 
 if "messages" not in st.session_state:
@@ -14,50 +14,46 @@ if "last_spoken_audio" not in st.session_state:
 if "recorder_key" not in st.session_state:
     st.session_state.recorder_key = 0
 
-# --- 2. GESTIÓN DE CLAVES ---
+# --- 2. CLAVES ---
 try:
     AZURE_KEY = st.secrets["AZURE_KEY"]
     AZURE_REGION = st.secrets["AZURE_REGION"]
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
-    st.error("❌ Faltan las claves en 'Secrets'.")
+    st.error("❌ ERROR CRÍTICO: No se encuentran las claves en Secrets.")
     st.stop()
 
-# --- 3. CONFIGURACIÓN GEMINI (VUELTA AL 2.5) ---
+# --- 3. CONFIGURACIÓN GEMINI (INTENTO DE CONEXIÓN ROBUSTA) ---
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
-    # VOLVEMOS AL MODELO QUE SABEMOS QUE TE FUNCIONA
-    model = genai.GenerativeModel('models/gemini-2.5-flash')
+    
+    # CAMBIO: Usamos 'gemini-1.5-flash' sin el prefijo 'models/' que a veces da error en la nube
+    # Si este falla, probaremos 'gemini-pro'
+    model = genai.GenerativeModel('gemini-1.5-flash')
 except Exception as e:
-    st.error(f"Error conectando con Gemini: {e}")
+    st.error(f"❌ Error al configurar Gemini: {e}")
 
-# --- 4. FUNCIONES DE AUDIO ---
-
+# --- 4. FUNCIONES AUDIO ---
 def generar_audio_resp(text):
-    """Genera audio y lo reproduce"""
     try:
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_synthesis_voice_name = "en-GB-RyanNeural"
         audio_config = speechsdk.audio.AudioOutputConfig(filename="output_ghost.wav")
-        
         synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
         result = synthesizer.speak_text_async(text).get()
-        
         if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
             st.audio(result.audio_data, format="audio/wav")
-            
     except Exception as e:
-        st.error(f"Error audio: {e}")
+        st.error(f"Error Audio: {e}")
 
 def process_audio_file(file_path, reference_text=None):
-    """Procesa el audio grabado"""
     try:
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_recognition_language = "en-GB"
         audio_config = speechsdk.audio.AudioConfig(filename=file_path)
         
         if reference_text:
-            # MODO EVALUACIÓN
+            # Modo Evaluación
             pronunciation_config = speechsdk.PronunciationAssessmentConfig(
                 reference_text=reference_text,
                 grading_system=speechsdk.PronunciationAssessmentGradingSystem.HundredMark,
@@ -67,77 +63,72 @@ def process_audio_file(file_path, reference_text=None):
             pronunciation_config.apply_to(recognizer)
             return recognizer.recognize_once()
         else:
-            # MODO CHAT
+            # Modo Chat
             recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
             return recognizer.recognize_once()
     except Exception as e:
         st.error(f"Error Azure: {e}")
         return None
 
-# --- 5. CEREBRO IA ---
+# --- 5. CEREBRO IA (CON DETECTOR DE ERRORES) ---
 def get_chat_response(history, user_input):
     prompt = f"""
-    Eres un tutor de inglés británico.
-    Historial: {history}
-    Usuario: "{user_input}"
-    Instrucciones:
-    1. Corrige errores gramaticales graves brevemente.
-    2. Responde para seguir la charla.
-    3. SOLO texto plano.
+    You are a British English tutor.
+    Chat History: {history}
+    User says: "{user_input}"
+    Task:
+    1. Briefly correct major grammar mistakes.
+    2. Reply to continue conversation.
+    3. PLAIN TEXT ONLY. NO JSON.
     """
     try:
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        st.error(f"❌ Error Gemini: {e}")
-        return "I can't think right now."
+        # AQUÍ ESTÁ EL CAMBIO: Te mostrará el error real en pantalla
+        st.error(f"⚠️ ERROR GEMINI DETALLADO: {e}") 
+        return "System Error (Check logs above)"
 
 def get_pronunciation_tips(text, errors):
-    prompt = f"Usuario dijo: '{text}'. Falló en: {', '.join(errors)}. Dame consejo breve (texto plano)."
+    prompt = f"User said: '{text}'. Errors: {', '.join(errors)}. Give brief pronunciation tips (IPA)."
     try:
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        st.error(f"❌ Error Gemini: {e}")
+        st.error(f"⚠️ ERROR GEMINI DETALLADO: {e}")
         return "Check pronunciation."
 
-# --- 6. INTERFAZ GRÁFICA ---
-
+# --- 6. INTERFAZ ---
 st.title("🇬🇧 British AI Tutor")
 
 with st.sidebar:
     st.header("Configuración")
     modo = st.radio("Modo:", ["🎯 Entrenador", "💬 Conversación"])
-    
     st.divider()
-    if st.button("🔄 Reiniciar Todo"):
+    if st.button("🔄 Reiniciar"):
         st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat."}]
         st.session_state.last_spoken_audio = ""
         st.session_state.recorder_key += 1
         st.rerun()
 
-# === MODO 1: ENTRENADOR ===
 if modo == "🎯 Entrenador":
     st.subheader("Entrenador de Lectura")
     frase = st.selectbox("Frase:", ["I would like a bottle of water please.", "The weather in London is unpredictable."])
     st.info(f"📖 Lee: **{frase}**")
     
-    key_entrenador = f"trainer_{st.session_state.recorder_key}"
-    audio_bytes_tr = audio_recorder(text="", recording_color="#e8b62c", neutral_color="#6aa36f", icon_size="2x", key=key_entrenador)
+    key_tr = f"tr_{st.session_state.recorder_key}"
+    audio_tr = audio_recorder(text="", recording_color="#e8b62c", neutral_color="#6aa36f", icon_size="2x", key=key_tr)
     
-    if audio_bytes_tr:
-        with open("temp_reading.wav", "wb") as f:
-            f.write(audio_bytes_tr)
-        
+    if audio_tr:
+        with open("temp_read.wav", "wb") as f: f.write(audio_tr)
         with st.spinner("Analizando..."):
-            res = process_audio_file("temp_reading.wav", reference_text=frase)
+            res = process_audio_file("temp_read.wav", reference_text=frase)
             
         if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
-            assess_res = speechsdk.PronunciationAssessmentResult(res)
-            score = assess_res.accuracy_score
-            st.metric("Nota", f"{score}/100")
+            assess = speechsdk.PronunciationAssessmentResult(res)
+            st.metric("Nota", f"{assess.accuracy_score}/100")
+            errores = [w.word for w in assess.words if w.accuracy_score < 80 and w.error_type != "None"]
             
-            errores = [w.word for w in assess_res.words if w.accuracy_score < 80 and w.error_type != "None"]
             if errores:
                 st.write(f"⚠️ Errores: {', '.join(errores)}")
                 feedback = get_pronunciation_tips(frase, errores)
@@ -150,24 +141,19 @@ if modo == "🎯 Entrenador":
         st.session_state.recorder_key += 1
         st.rerun()
 
-# === MODO 2: CONVERSACIÓN ===
 else:
     st.subheader("Chat Británico")
-    
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
-
+            
     st.write("---")
     st.write("👇 **Pulsa para hablar:**")
+    key_chat = f"ch_{st.session_state.recorder_key}"
+    audio_ch = audio_recorder(text="", recording_color="#ff4b4b", neutral_color="#6aa36f", icon_size="2x", key=key_chat)
     
-    key_chat = f"chat_{st.session_state.recorder_key}"
-    chat_audio = audio_recorder(text="", recording_color="#ff4b4b", neutral_color="#6aa36f", icon_size="2x", key=key_chat)
-    
-    if chat_audio:
-        with open("temp_chat.wav", "wb") as f:
-            f.write(chat_audio)
-            
+    if audio_ch:
+        with open("temp_chat.wav", "wb") as f: f.write(audio_ch)
         with st.spinner("Escuchando..."):
             res = process_audio_file("temp_chat.wav")
             
