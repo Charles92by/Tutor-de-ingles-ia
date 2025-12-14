@@ -1,0 +1,4 @@
+streamlit
+azure-cognitiveservices-speech
+google-generativeai
+audio-recorder-streamlit

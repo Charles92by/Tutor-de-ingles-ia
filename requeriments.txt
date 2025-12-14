@@ -1,3 +1,0 @@
-streamlit
-azure-cognitiveservices-speech
-google-generativeai
