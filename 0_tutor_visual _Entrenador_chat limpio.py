@@ -20,22 +20,52 @@ try:
     AZURE_REGION = st.secrets["AZURE_REGION"]
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
-    st.error("❌ Faltan claves en Secrets.")
+    st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. CONEXIÓN GEMINI (MODELO 2.0 FLASH - MÁS ESTABLE) ---
-try:
-    genai.configure(api_key=GOOGLE_API_KEY)
-    # Usamos el 2.0 que apareció confirmado en tu diagnóstico
-    model = genai.GenerativeModel('models/gemini-2.0-flash')
-except Exception as e:
-    st.error(f"❌ Error al configurar Gemini: {e}")
+# --- 3. CONEXIÓN INTELIGENTE (AUTO-SELECTOR) 🧠 ---
+# Esta lista está ordenada por probabilidad de éxito en cuentas gratuitas
+possible_models = [
+    "gemini-1.5-flash",          # El estándar gratuito más estable
+    "models/gemini-1.5-flash",   # Variación de nombre
+    "gemini-2.5-flash",          # El nuevo (si tienes suerte)
+    "models/gemini-2.5-flash",
+    "gemini-2.0-flash",          # El experimental (que te dio error 429)
+    "gemini-pro"                 # El clásico de respaldo
+]
+
+active_model = None
+genai.configure(api_key=GOOGLE_API_KEY)
+
+# Barra lateral para ver qué está pasando
+status_text = st.sidebar.empty()
+status_text.text("🔄 Buscando modelo disponible...")
+
+for model_name in possible_models:
+    try:
+        # Intentamos conectar y generar un "Hola" silencioso
+        test_model = genai.GenerativeModel(model_name)
+        test_model.generate_content("Hi")
+        
+        # Si llegamos aquí, ¡funciona!
+        active_model = test_model
+        status_text.success(f"✅ Conectado a: {model_name}")
+        break # Dejamos de buscar
+    except Exception as e:
+        # Si falla (404 o 429), probamos el siguiente
+        continue
+
+if not active_model:
+    st.error("❌ ERROR TOTAL: Tu cuenta de Google ha agotado la cuota gratuita o no tiene modelos habilitados. Revisa billing en Google AI Studio.")
+    st.stop()
+
 
 # --- 4. FUNCIONES AUDIO ---
 def generar_audio_resp(text):
     try:
-        if "ERROR:" in text: return # No leer errores técnicos en voz alta
-        
+        # Filtro de seguridad: Si el texto es un error, no lo leas en voz alta
+        if "ERROR" in text or "429" in text: return
+
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_synthesis_voice_name = "en-GB-RyanNeural"
         audio_config = speechsdk.audio.AudioOutputConfig(filename="output_ghost.wav")
@@ -68,7 +98,7 @@ def process_audio_file(file_path, reference_text=None):
         st.error(f"Error Azure: {e}")
         return None
 
-# --- 5. CEREBRO IA (SIN MÁSCARAS) ---
+# --- 5. CEREBRO IA ---
 def get_chat_response(history, user_input):
     prompt = f"""
     You are a British English tutor.
@@ -77,22 +107,21 @@ def get_chat_response(history, user_input):
     Task:
     1. Briefly correct major grammar mistakes.
     2. Reply to continue conversation.
-    3. PLAIN TEXT ONLY. NO JSON.
+    3. Keep it short. PLAIN TEXT ONLY. NO JSON.
     """
     try:
-        response = model.generate_content(prompt)
+        response = active_model.generate_content(prompt)
         return response.text
     except Exception as e:
-        # AQUÍ ESTÁ EL CAMBIO: El error se devuelve como texto del chat
-        return f"ERROR: {str(e)}"
+        return f"ERROR IA: {str(e)}"
 
 def get_pronunciation_tips(text, errors):
     prompt = f"User said: '{text}'. Errors: {', '.join(errors)}. Give brief pronunciation tips (IPA)."
     try:
-        response = model.generate_content(prompt)
+        response = active_model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Error tips: {str(e)}"
+        return "Check pronunciation."
 
 # --- 6. INTERFAZ ---
 st.title("🇬🇧 British AI Tutor")
@@ -157,11 +186,10 @@ else:
             user_text = res.text
             st.session_state.messages.append({"role": "user", "content": user_text})
             
-            # Generar respuesta
-            bot_reply = get_chat_response("", user_text) # Historial simplificado para prueba
+            historial = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
+            bot_reply = get_chat_response(historial, user_text)
             
             st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-            
             st.session_state.recorder_key += 1
             st.rerun()
 
