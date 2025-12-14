@@ -1,3 +1,17 @@
+import os
+import subprocess
+import sys
+import google.generativeai as genai
+
+# --- AUTO-UPDATE FORZOSO ---
+try:
+    if genai.__version__ < "0.8.3":
+        print(f"⚠️ Versión antigua detectada ({genai.__version__}). Actualizando...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "google-generativeai"])
+        import google.generativeai as genai # Recargar
+except:
+    pass
+
 import streamlit as st
 import azure.cognitiveservices.speech as speechsdk
 import google.generativeai as genai
@@ -23,37 +37,20 @@ except:
     st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. CONEXIÓN GOOGLE (MODO DIAGNÓSTICO) 🕵️‍♂️ ---
-if "working_model_name" not in st.session_state:
-    # Lista de modelos a probar
-    possible_models = ["models/gemini-flash-latest", "gemini-1.5-flash", "gemini-pro"]
-    found = None
-    last_error_msg = ""
-    
+# --- 3. CONEXIÓN DIRECTA (Sin bucles) ---
+# Mostramos la versión para depurar
+st.sidebar.text(f"📚 Lib Version: {genai.__version__}")
+
+try:
     genai.configure(api_key=GOOGLE_API_KEY)
     
-    st.info("🔄 Probando conexión con Google...")
+    # ⚠️ USAMOS EL NOMBRE EXACTO SIN 'models/' PARA EVITAR EL ERROR 404
+    # Si la librería es nueva, esto funcionará.
+    active_model = genai.GenerativeModel('gemini-1.5-flash')
     
-    for m in possible_models:
-        try:
-            model = genai.GenerativeModel(m)
-            model.generate_content("Hi")
-            found = m
-            break
-        except Exception as e:
-            # Guardamos el error para mostrártelo si todo falla
-            last_error_msg = str(e)
-            continue
-    
-    if found:
-        st.session_state.working_model_name = found
-        st.success(f"✅ Conectado a: {found}")
-    else:
-        # AQUÍ ESTÁ EL CAMBIO: Te mostrará el error real
-        st.error(f"❌ Error Fatal de Google: {last_error_msg}")
-        st.stop()
-
-active_model = genai.GenerativeModel(st.session_state.working_model_name)
+except Exception as e:
+    st.error(f"❌ Error Configuración: {e}")
+    st.stop()
 
 # --- 4. FUNCIONES AUDIO ---
 def generar_audio_resp(text):
@@ -72,6 +69,7 @@ def process_audio_file(file_path, reference_text=None):
     try:
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_recognition_language = "en-GB"
+        # 3 segundos de paciencia para que no te corte
         speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "3000")
         
         audio_config = speechsdk.audio.AudioConfig(filename=file_path)
@@ -95,15 +93,17 @@ def get_chat_response(history, user_input):
     prompt = f"""
     You are a British English tutor. User said: "{user_input}".
     History: {history}
-    1. Contextualize if transcription is weird.
-    2. Correct grammar gently.
-    3. Reply naturally.
+    1. Reply naturally in English.
+    2. Correct grammar gently if needed.
     """
-    try: return active_model.generate_content(prompt).text
-    except Exception as e: return f"Error IA: {e}"
+    try: 
+        return active_model.generate_content(prompt).text
+    except Exception as e: 
+        # Aquí veremos el error REAL si falla al hablar
+        return f"ERROR IA: {e}"
 
 def get_pronunciation_tips(text, errors):
-    try: return active_model.generate_content(f"Tips for pronouncing: {errors} in British English.").text
+    try: return active_model.generate_content(f"Tips for pronouncing: {errors}").text
     except: return "Check pronunciation."
 
 # --- 6. INTERFAZ ---
