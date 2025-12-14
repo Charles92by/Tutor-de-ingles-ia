@@ -37,19 +37,15 @@ except:
     st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. CONEXIÓN DIRECTA (Sin bucles) ---
-# Mostramos la versión para depurar
-st.sidebar.text(f"📚 Lib Version: {genai.__version__}")
-
+# --- 3. CONEXIÓN SEGURA (MODELO CLÁSICO) ---
+# Usamos 'gemini-pro' porque funciona incluso en versiones antiguas de la librería
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
-    
-    # ⚠️ USAMOS EL NOMBRE EXACTO SIN 'models/' PARA EVITAR EL ERROR 404
-    # Si la librería es nueva, esto funcionará.
-    active_model = genai.GenerativeModel('gemini-1.5-flash')
-    
+    active_model = genai.GenerativeModel('gemini-pro')
+    # Prueba silenciosa
+    # active_model.generate_content("Hi") 
 except Exception as e:
-    st.error(f"❌ Error Configuración: {e}")
+    st.error(f"❌ Error conectando con Gemini: {e}")
     st.stop()
 
 # --- 4. FUNCIONES AUDIO ---
@@ -69,8 +65,8 @@ def process_audio_file(file_path, reference_text=None):
     try:
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_recognition_language = "en-GB"
-        # 3 segundos de paciencia para que no te corte
-        speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "3000")
+        # Damos 2 segundos de margen de silencio
+        speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "2000")
         
         audio_config = speechsdk.audio.AudioConfig(filename=file_path)
         recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
@@ -94,12 +90,11 @@ def get_chat_response(history, user_input):
     You are a British English tutor. User said: "{user_input}".
     History: {history}
     1. Reply naturally in English.
-    2. Correct grammar gently if needed.
+    2. Keep it simple.
     """
     try: 
         return active_model.generate_content(prompt).text
     except Exception as e: 
-        # Aquí veremos el error REAL si falla al hablar
         return f"ERROR IA: {e}"
 
 def get_pronunciation_tips(text, errors):
@@ -119,6 +114,7 @@ with st.sidebar:
         st.session_state.manual_reset_counter += 1
         st.rerun()
 
+# Clave estable para el botón
 stable_key = f"recorder_{modo}_{st.session_state.manual_reset_counter}"
 
 if modo == "🎯 Entrenador":
