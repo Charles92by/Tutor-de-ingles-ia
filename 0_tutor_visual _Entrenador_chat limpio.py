@@ -13,24 +13,9 @@ except:
     pass
 
 import streamlit as st
-import os
-import subprocess
-import sys
-
-# --- 0. MARTILLO DE ACTUALIZACIÓN 🔨 ---
-# Esto obliga al servidor a instalar la versión moderna de la librería
-# para que reconozca el modelo 1.5 (que tiene 1500 mensajes gratis).
-try:
-    import google.generativeai as genai
-    # Si la versión es vieja, forzamos la actualización
-    if genai.__version__ < "0.8.3":
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "google-generativeai"])
-        import google.generativeai as genai # Recargamos
-except:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "google-generativeai"])
-    import google.generativeai as genai
-
 import azure.cognitiveservices.speech as speechsdk
+import requests # <--- USAMOS ESTO EN LUGAR DE LA LIBRERÍA DE GOOGLE
+import json
 from audio_recorder_streamlit import audio_recorder
 
 # --- 1. CONFIGURACIÓN INICIAL ---
@@ -52,22 +37,42 @@ except:
     st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. CONEXIÓN AL MODELO DE ALTA CAPACIDAD (1.5 FLASH) ---
-try:
-    genai.configure(api_key=GOOGLE_API_KEY)
+# --- 3. FUNCIÓN DE CONEXIÓN DIRECTA (BYPASS) 🚀 ---
+def call_gemini_flash(prompt_text):
+    """
+    Llama directamente a la API REST de Google, ignorando la librería de Python.
+    Usa el modelo 1.5-flash que tiene 1500 peticiones gratis.
+    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GOOGLE_API_KEY}"
     
-    # Usamos explícitamente el 1.5 Flash (1500 peticiones/día)
-    # Gracias al "Martillo" del principio, ahora la librería SÍ lo reconocerá.
-    active_model = genai.GenerativeModel('gemini-1.5-flash')
+    headers = {
+        "Content-Type": "application/json"
+    }
     
-except Exception as e:
-    st.error(f"❌ Error Configuración: {e}")
-    st.stop()
+    data = {
+        "contents": [{
+            "parts": [{"text": prompt_text}]
+        }],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 150
+        }
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(data))
+        
+        if response.status_code == 200:
+            return response.json()['candidates'][0]['content']['parts'][0]['text']
+        else:
+            return f"Error Google ({response.status_code}): {response.text}"
+    except Exception as e:
+        return f"Error de conexión: {str(e)}"
 
 # --- 4. FUNCIONES AUDIO ---
 def generar_audio_resp(text):
     try:
-        if "ERROR" in text: return
+        if "Error" in text: return
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_synthesis_voice_name = "en-GB-RyanNeural"
         audio_config = speechsdk.audio.AudioOutputConfig(filename="output_ghost.wav")
@@ -81,8 +86,8 @@ def process_audio_file(file_path, reference_text=None):
     try:
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_recognition_language = "en-GB"
-        # 3 segundos de margen para que no te corte al pensar
-        speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "3000")
+        # 2 segundos de paciencia
+        speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "2000")
         
         audio_config = speechsdk.audio.AudioConfig(filename=file_path)
         recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
@@ -100,26 +105,32 @@ def process_audio_file(file_path, reference_text=None):
         st.error(f"Error Azure: {e}")
         return None
 
-# --- 5. CEREBRO IA ---
+# --- 5. CEREBRO IA (USANDO BYPASS) ---
 def get_chat_response(history, user_input):
+    # Combinamos historial y input en un solo texto para simplificar la petición REST
     prompt = f"""
-    You are a British English tutor. User said: "{user_input}".
-    History: {history}
-    1. Reply naturally in English.
-    2. Keep it simple.
+    You are a friendly British English tutor.
+    
+    Conversation History:
+    {history}
+    
+    User just said: "{user_input}"
+    
+    Instructions:
+    1. If the user made a grammar mistake, correct it gently.
+    2. Reply naturally to continue the chat.
+    3. Keep it short and simple (A2/B1 level).
+    4. PLAIN TEXT ONLY.
     """
-    try: 
-        return active_model.generate_content(prompt).text
-    except Exception as e: 
-        return f"ERROR IA: {e}"
+    return call_gemini_flash(prompt)
 
 def get_pronunciation_tips(text, errors):
-    try: return active_model.generate_content(f"Tips for pronouncing: {errors}").text
-    except: return "Check pronunciation."
+    prompt = f"User said: '{text}'. Errors: {', '.join(errors)}. Give 1 sentence with pronunciation tips (IPA) for these words."
+    return call_gemini_flash(prompt)
 
 # --- 6. INTERFAZ ---
 st.title("🇬🇧 British AI Tutor")
-st.caption(f"🤖 Motor: Gemini 1.5 Flash (Versión Lib: {genai.__version__})")
+st.caption("🤖 Motor: Gemini 1.5 Flash (Conexión Directa)")
 
 with st.sidebar:
     st.divider()
@@ -187,7 +198,9 @@ else:
             user_text = res.text
             st.session_state.messages.append({"role": "user", "content": user_text})
             historial = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
+            
             bot_reply = get_chat_response(historial, user_text)
+            
             st.session_state.messages.append({"role": "assistant", "content": bot_reply})
             generar_audio_resp(bot_reply)
             st.rerun()
