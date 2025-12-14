@@ -14,7 +14,6 @@ if "last_processed_audio" not in st.session_state:
     st.session_state.last_processed_audio = b""
 if "manual_reset_counter" not in st.session_state:
     st.session_state.manual_reset_counter = 0
-# NUEVO: Variable para guardar el audio entre recargas
 if "audio_buffer" not in st.session_state:
     st.session_state.audio_buffer = None
 
@@ -28,10 +27,11 @@ except:
     st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. AUTO-DESCUBRIMIENTO (Ya sabemos que esto funciona) ---
+# --- 3. AUTO-DESCUBRIMIENTO DE MODELO ---
 def get_valid_model():
     if "final_model_id" in st.session_state: return st.session_state.final_model_id
     try:
+        # Pedimos el menú a Google
         url_list = f"https://generativelanguage.googleapis.com/v1beta/models?key={GOOGLE_API_KEY}"
         response = requests.get(url_list)
         data = response.json()
@@ -41,19 +41,21 @@ def get_valid_model():
                 if 'generateContent' in m['supportedGenerationMethods']:
                     available_models.append(m['name'])
         
-        priority_order = ["models/gemini-1.5-flash", "models/gemini-1.5-flash-001", "models/gemini-pro"]
-        sorted_models = sorted(available_models, key=lambda x: priority_order.index(x) if x in priority_order else 999)
+        # Probamos en orden de preferencia
+        priority = ["models/gemini-1.5-flash", "models/gemini-1.5-flash-001", "models/gemini-pro"]
+        sorted_models = sorted(available_models, key=lambda x: priority.index(x) if x in priority else 999)
 
-        for model_name in sorted_models:
-            test_url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GOOGLE_API_KEY}"
+        for model in sorted_models:
+            test_url = f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent?key={GOOGLE_API_KEY}"
             test_data = {"contents": [{"parts": [{"text": "Hi"}]}]}
             try:
                 r = requests.post(test_url, headers={"Content-Type": "application/json"}, data=json.dumps(test_data))
                 if r.status_code == 200:
-                    st.session_state.final_model_id = model_name
-                    return model_name
+                    st.session_state.final_model_id = model
+                    return model
             except: continue
-        st.error("❌ No hay modelos disponibles."); st.stop()
+        st.error("❌ No hay modelos disponibles.")
+        st.stop()
     except: st.error("Error conexión."); st.stop()
 
 ACTIVE_MODEL = get_valid_model()
@@ -70,16 +72,15 @@ def query_gemini(prompt_text):
         response = requests.post(url, headers=headers, data=json.dumps(data))
         if response.status_code == 200:
             return response.json()['candidates'][0]['content']['parts'][0]['text']
-        else: return "I'm having trouble thinking right now."
+        else: return "I'm having trouble thinking."
     except: return "Connection error."
 
-# --- 5. GENERAR AUDIO (SOLO BYTES) ---
+# --- 5. AUDIO FUNCTIONS ---
 def obtener_bytes_audio(text):
     if "Error" in text: return None
     try:
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_synthesis_voice_name = "en-GB-RyanNeural"
-        # Usamos pull stream para obtener los bytes directamente
         synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
         result = synthesizer.speak_text_async(text).get()
         if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
@@ -91,6 +92,7 @@ def process_audio_file(file_path):
     try:
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_recognition_language = "en-GB"
+        # 3 segundos de paciencia
         speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "3000")
         audio_config = speechsdk.audio.AudioConfig(filename=file_path)
         recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
@@ -118,55 +120,63 @@ def get_chat_response(history_list, user_input):
 # --- 7. INTERFAZ ---
 st.title("🇬🇧 British AI Tutor")
 
+# --- BARRA LATERAL (CONTROLES Y AUDIO) ---
 with st.sidebar:
     st.divider()
     if st.button("🔄 Reiniciar"):
         st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready."}]
         st.session_state.last_processed_audio = b""
-        st.session_state.audio_buffer = None # Borramos audio pendiente
+        st.session_state.audio_buffer = None
         st.session_state.manual_reset_counter += 1
         st.rerun()
+    
+    # --- REPRODUCTOR EN LA BARRA LATERAL (NO MOLESTA AL BOTÓN) ---
+    st.divider()
+    st.write("🔊 **Audio Respuesta:**")
+    if st.session_state.audio_buffer:
+        # Autoplay activado. Al estar en la sidebar, no rompe el layout principal.
+        st.audio(st.session_state.audio_buffer, format="audio/wav", autoplay=True)
+    else:
+        st.caption("(Esperando respuesta...)")
 
-# --- PANTALLA DE CHAT ---
-# Mostramos el historial PRIMERO
+# --- CHAT PRINCIPAL ---
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-# --- REPRODUCTOR DE AUDIO PERSISTENTE 🔊 ---
-# Este bloque se ejecuta DESPUÉS del rerun, por lo que el audio se queda fijo.
-if st.session_state.audio_buffer:
-    st.write("---")
-    st.write("🔊 **Escucha la respuesta:**")
-    # Autoplay=True para que suene solo en cuanto cargue la página
-    st.audio(st.session_state.audio_buffer, format="audio/wav", autoplay=True)
+# Separador visual
+st.divider()
 
-# --- GRABADORA ---
-st.write("---")
-stable_key = f"recorder_main_{st.session_state.manual_reset_counter}"
-st.write("👇 **Pulsa para hablar:**")
-chat_audio = audio_recorder(text="", recording_color="#ff4b4b", neutral_color="#6aa36f", icon_size="2x", key=stable_key)
+# --- ZONA DE GRABACIÓN (ESTABLE) ---
+# Usamos un contenedor para asegurar que el botón tiene su espacio reservado
+input_container = st.container()
 
-if chat_audio and chat_audio != st.session_state.last_processed_audio:
-    st.session_state.last_processed_audio = chat_audio
-    with open("temp.wav", "wb") as f: f.write(chat_audio)
+with input_container:
+    st.write("👇 **Pulsa para hablar:**")
+    stable_key = f"recorder_main_{st.session_state.manual_reset_counter}"
     
-    with st.spinner("Procesando..."):
-        res = process_audio_file("temp.wav")
+    # El grabador se renderiza AQUÍ, sin interferencias del audio player
+    chat_audio = audio_recorder(text="", recording_color="#ff4b4b", neutral_color="#6aa36f", icon_size="2x", key=stable_key)
+
+    if chat_audio and chat_audio != st.session_state.last_processed_audio:
+        st.session_state.last_processed_audio = chat_audio
+        with open("temp.wav", "wb") as f: f.write(chat_audio)
         
-        if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
-            user_text = res.text
-            st.session_state.messages.append({"role": "user", "content": user_text})
+        with st.spinner("Procesando..."):
+            res = process_audio_file("temp.wav")
             
-            # Generamos respuesta de texto
-            bot_reply = get_chat_response(st.session_state.messages, user_text)
-            st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-            
-            # Generamos audio y lo GUARDAMOS en la memoria (no lo reproducimos aún)
-            audio_bytes = obtener_bytes_audio(bot_reply)
-            st.session_state.audio_buffer = audio_bytes
-            
-            # Recargamos la página para mostrar el nuevo mensaje y el audio
-            st.rerun()
-        else:
-            st.warning("😓 No te he entendido bien. Inténtalo de nuevo.")
+            if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
+                user_text = res.text
+                st.session_state.messages.append({"role": "user", "content": user_text})
+                
+                # Generamos texto
+                bot_reply = get_chat_response(st.session_state.messages, user_text)
+                st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+                
+                # Generamos audio y lo mandamos a la SIDEBAR
+                audio_bytes = obtener_bytes_audio(bot_reply)
+                st.session_state.audio_buffer = audio_bytes
+                
+                st.rerun()
+            else:
+                st.warning("😓 No te he entendido bien. Inténtalo de nuevo.")
