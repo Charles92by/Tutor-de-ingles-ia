@@ -1,6 +1,6 @@
 import streamlit as st
 import azure.cognitiveservices.speech as speechsdk
-import requests  # <--- USAMOS ESTO PARA SALTARNOS LA LIBRERÍA VIEJA
+import requests  # Conexión directa
 import json
 from audio_recorder_streamlit import audio_recorder
 import os
@@ -24,14 +24,14 @@ except:
     st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. CONEXIÓN DIRECTA (BYPASS) PARA EVITAR LÍMITE DE 20 MENSAJES 🚀 ---
+# --- 3. CONEXIÓN DIRECTA AL MODELO ESTÁNDAR (GEMINI PRO) 🛡️ ---
 def query_gemini_direct(prompt_text):
     """
-    Se conecta directamente a la API de Google sin usar la librería de Python.
-    Fuerza el uso de gemini-1.5-flash para tener 1500 peticiones diarias.
+    Usa 'gemini-pro' (versión 1.0). 
+    Es menos moderno que el 1.5 pero es el más estable y compatible en Europa.
     """
-    # URL directa al modelo 1.5 Flash
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GOOGLE_API_KEY}"
+    # URL cambiada al modelo clásico "gemini-pro"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GOOGLE_API_KEY}"
     
     headers = {"Content-Type": "application/json"}
     data = {
@@ -50,12 +50,11 @@ def query_gemini_direct(prompt_text):
         if response.status_code == 200:
             return response.json()['candidates'][0]['content']['parts'][0]['text']
         else:
-            # Si falla, devolvemos el error técnico para verlo
             return f"Error Google ({response.status_code}): {response.text}"
     except Exception as e:
         return f"Error Conexión: {str(e)}"
 
-# --- 4. FUNCIONES AUDIO (Con Paciencia de 3 seg) ---
+# --- 4. FUNCIONES AUDIO (Con Paciencia 3 seg) ---
 def generar_audio_resp(text):
     try:
         if "Error" in text: return
@@ -73,7 +72,7 @@ def process_audio_file(file_path, reference_text=None):
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_recognition_language = "en-GB"
         
-        # --- PACIENCIA AZURE: 3 SEGUNDOS ---
+        # 3 segundos de paciencia
         speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "3000")
         
         audio_config = speechsdk.audio.AudioConfig(filename=file_path)
@@ -92,7 +91,7 @@ def process_audio_file(file_path, reference_text=None):
         st.error(f"Error Azure: {e}")
         return None
 
-# --- 5. CEREBRO IA (Usando el Bypass) ---
+# --- 5. CEREBRO IA ---
 def get_chat_response(history, user_input):
     prompt = f"""
     You are a friendly British English tutor.
@@ -100,8 +99,8 @@ def get_chat_response(history, user_input):
     User just said: "{user_input}"
     
     Instructions:
-    1. If transcription is slightly wrong, guess the context.
-    2. Correct grammar gently inside your reply.
+    1. If transcription is wrong, guess the context.
+    2. Correct grammar gently.
     3. Keep it short. PLAIN TEXT ONLY.
     """
     return query_gemini_direct(prompt)
@@ -112,7 +111,7 @@ def get_pronunciation_tips(text, errors):
 
 # --- 6. INTERFAZ ---
 st.title("🇬🇧 British AI Tutor")
-st.caption("🚀 Motor: Gemini 1.5 Flash (Conexión Directa)")
+st.caption("🛡️ Motor: Gemini Pro (Clásico y Estable)")
 
 with st.sidebar:
     st.divider()
