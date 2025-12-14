@@ -23,49 +23,41 @@ except:
     st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. CONEXIÓN INTELIGENTE (AUTO-SELECTOR) 🧠 ---
-# Esta lista está ordenada por probabilidad de éxito en cuentas gratuitas
+# --- 3. CONEXIÓN INTELIGENTE (VERSIÓN EUROPA COMPATIBLE 🇪🇺) ---
+# Usamos los alias genéricos que aparecieron en tu lista de diagnóstico
 possible_models = [
-    "gemini-1.5-flash",          # El estándar gratuito más estable
-    "models/gemini-1.5-flash",   # Variación de nombre
-    "gemini-2.5-flash",          # El nuevo (si tienes suerte)
-    "models/gemini-2.5-flash",
-    "gemini-2.0-flash",          # El experimental (que te dio error 429)
-    "gemini-pro"                 # El clásico de respaldo
+    "models/gemini-flash-latest", # <--- ESTE ES EL CLAVE PARA EUROPA
+    "models/gemini-pro-latest",   # Respaldo potente
+    "gemini-1.5-flash"            # Estándar
 ]
 
 active_model = None
 genai.configure(api_key=GOOGLE_API_KEY)
 
-# Barra lateral para ver qué está pasando
 status_text = st.sidebar.empty()
-status_text.text("🔄 Buscando modelo disponible...")
+status_text.text("🔄 Conectando con Google AI...")
 
+# Bucle de conexión a prueba de fallos
 for model_name in possible_models:
     try:
-        # Intentamos conectar y generar un "Hola" silencioso
         test_model = genai.GenerativeModel(model_name)
+        # Prueba silenciosa
         test_model.generate_content("Hi")
-        
-        # Si llegamos aquí, ¡funciona!
         active_model = test_model
         status_text.success(f"✅ Conectado a: {model_name}")
-        break # Dejamos de buscar
+        break 
     except Exception as e:
-        # Si falla (404 o 429), probamos el siguiente
         continue
 
 if not active_model:
-    st.error("❌ ERROR TOTAL: Tu cuenta de Google ha agotado la cuota gratuita o no tiene modelos habilitados. Revisa billing en Google AI Studio.")
+    st.error("❌ ERROR DE CUENTA: Google no permite el uso gratuito en tu región con esta API Key. Solución: Crea una nueva API Key en Google AI Studio.")
     st.stop()
 
 
 # --- 4. FUNCIONES AUDIO ---
 def generar_audio_resp(text):
     try:
-        # Filtro de seguridad: Si el texto es un error, no lo leas en voz alta
         if "ERROR" in text or "429" in text: return
-
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_synthesis_voice_name = "en-GB-RyanNeural"
         audio_config = speechsdk.audio.AudioOutputConfig(filename="output_ghost.wav")
