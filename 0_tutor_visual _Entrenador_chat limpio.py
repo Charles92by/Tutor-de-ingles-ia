@@ -23,34 +23,49 @@ except:
     st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. CONEXIÓN INTELIGENTE (VERSIÓN EUROPA COMPATIBLE 🇪🇺) ---
-# Usamos los alias genéricos que aparecieron en tu lista de diagnóstico
-possible_models = [
-    "models/gemini-flash-latest", # <--- ESTE ES EL CLAVE PARA EUROPA
-    "models/gemini-pro-latest",   # Respaldo potente
-    "gemini-1.5-flash"            # Estándar
-]
+# --- 3. CONEXIÓN INTELIGENTE CON MEMORIA (NO SPAM) 🧠 ---
 
-active_model = None
-genai.configure(api_key=GOOGLE_API_KEY)
+# Solo configuramos la API una vez
+try:
+    genai.configure(api_key=GOOGLE_API_KEY)
+except Exception as e:
+    st.error(f"Error Key: {e}")
 
-status_text = st.sidebar.empty()
-status_text.text("🔄 Conectando con Google AI...")
+# Lógica de Caché: Si ya sabemos qué modelo funciona, no buscamos más.
+if "working_model_name" not in st.session_state:
+    st.sidebar.text("🔄 Buscando modelo compatible...")
+    
+    # Lista prioritaria para Europa
+    possible_models = [
+        "models/gemini-1.5-flash",    # El más estable
+        "gemini-1.5-flash",           # Alias corto
+        "models/gemini-flash-latest", # Alias "siempre fresco"
+        "gemini-pro"                  # Respaldo viejo confiable
+    ]
+    
+    found_model = None
+    for model_name in possible_models:
+        try:
+            # Prueba de fuego: Generar 1 token
+            test_model = genai.GenerativeModel(model_name)
+            test_model.generate_content("Hi")
+            found_model = model_name
+            break # ¡Encontrado! Salimos del bucle
+        except:
+            continue
+    
+    if found_model:
+        st.session_state.working_model_name = found_model # GUARDAMOS EL GANADOR
+        st.sidebar.success(f"✅ Conectado a: {found_model}")
+    else:
+        st.error("❌ BLOQUEO TOTAL: Google ha rechazado todas las conexiones. Espera 1 minuto y recarga.")
+        st.stop()
 
-# Bucle de conexión a prueba de fallos
-for model_name in possible_models:
-    try:
-        test_model = genai.GenerativeModel(model_name)
-        # Prueba silenciosa
-        test_model.generate_content("Hi")
-        active_model = test_model
-        status_text.success(f"✅ Conectado a: {model_name}")
-        break 
-    except Exception as e:
-        continue
-
-if not active_model:
-    st.error("❌ ERROR DE CUENTA: Google no permite el uso gratuito en tu región con esta API Key. Solución: Crea una nueva API Key en Google AI Studio.")
+# Instanciamos el modelo usando SIEMPRE el nombre guardado en memoria
+try:
+    active_model = genai.GenerativeModel(st.session_state.working_model_name)
+except:
+    st.error("Error recuperando modelo de memoria. Recarga la página.")
     st.stop()
 
 
@@ -123,9 +138,15 @@ with st.sidebar:
     modo = st.radio("Modo:", ["🎯 Entrenador", "💬 Conversación"])
     st.divider()
     if st.button("🔄 Reiniciar"):
+        # Limpiamos todo MENOS el modelo guardado
+        guardar_modelo = st.session_state.get("working_model_name", None)
+        st.session_state.clear()
+        if guardar_modelo:
+            st.session_state.working_model_name = guardar_modelo
+        
         st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat."}]
         st.session_state.last_spoken_audio = ""
-        st.session_state.recorder_key += 1
+        st.session_state.recorder_key = 0
         st.rerun()
 
 if modo == "🎯 Entrenador":
