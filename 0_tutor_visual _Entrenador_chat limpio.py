@@ -14,6 +14,9 @@ if "last_processed_audio" not in st.session_state:
     st.session_state.last_processed_audio = b""
 if "manual_reset_counter" not in st.session_state:
     st.session_state.manual_reset_counter = 0
+# NUEVO: Variable para guardar el audio entre recargas
+if "audio_buffer" not in st.session_state:
+    st.session_state.audio_buffer = None
 
 # --- 2. CLAVES ---
 try:
@@ -25,34 +28,20 @@ except:
     st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. AUTO-DESCUBRIMIENTO DE MODELOS 🕵️‍♂️ ---
+# --- 3. AUTO-DESCUBRIMIENTO (Ya sabemos que esto funciona) ---
 def get_valid_model():
-    if "final_model_id" in st.session_state:
-        return st.session_state.final_model_id
-
-    st.info("🔍 Buscando el mejor modelo para tu cuenta...")
-    
+    if "final_model_id" in st.session_state: return st.session_state.final_model_id
     try:
-        # 1. Obtenemos lista de modelos
         url_list = f"https://generativelanguage.googleapis.com/v1beta/models?key={GOOGLE_API_KEY}"
         response = requests.get(url_list)
         data = response.json()
         available_models = []
-        
         if 'models' in data:
             for m in data['models']:
                 if 'generateContent' in m['supportedGenerationMethods']:
                     available_models.append(m['name'])
         
-        # 2. Prioridad de prueba (Flash suele ser el más rápido y libre)
-        priority_order = [
-            "models/gemini-1.5-flash", 
-            "models/gemini-1.5-flash-001",
-            "models/gemini-1.5-flash-8b",
-            "models/gemini-pro",
-            "models/gemini-1.0-pro"
-        ]
-        
+        priority_order = ["models/gemini-1.5-flash", "models/gemini-1.5-flash-001", "models/gemini-pro"]
         sorted_models = sorted(available_models, key=lambda x: priority_order.index(x) if x in priority_order else 999)
 
         for model_name in sorted_models:
@@ -62,78 +51,54 @@ def get_valid_model():
                 r = requests.post(test_url, headers={"Content-Type": "application/json"}, data=json.dumps(test_data))
                 if r.status_code == 200:
                     st.session_state.final_model_id = model_name
-                    st.success(f"✅ Conectado a: **{model_name}**")
                     return model_name
             except: continue
-        
-        st.error("❌ No se encontraron modelos disponibles.")
-        st.stop()
-
-    except Exception as e:
-        st.error(f"Error de conexión: {e}")
-        st.stop()
+        st.error("❌ No hay modelos disponibles."); st.stop()
+    except: st.error("Error conexión."); st.stop()
 
 ACTIVE_MODEL = get_valid_model()
 
-# --- 4. CEREBRO IA (MEJORADO Y ESTABILIZADO) 🧠 ---
+# --- 4. CEREBRO IA ---
 def query_gemini(prompt_text):
     url = f"https://generativelanguage.googleapis.com/v1beta/{ACTIVE_MODEL}:generateContent?key={GOOGLE_API_KEY}"
     headers = {"Content-Type": "application/json"}
-    
-    # AQUÍ ESTÁ EL CAMBIO IMPORTANTE:
-    # 1. maxOutputTokens: 400 (antes 150) -> Para que no se corte.
-    # 2. temperature: 0.3 (antes 0.7) -> Para que sea más centrado y no diga tonterías.
     data = {
         "contents": [{"parts": [{"text": prompt_text}]}],
-        "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": 400
-        },
-        # Filtros de seguridad desactivados para evitar bloqueos tontos
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-        ]
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 400}
     }
     try:
         response = requests.post(url, headers=headers, data=json.dumps(data))
         if response.status_code == 200:
             return response.json()['candidates'][0]['content']['parts'][0]['text']
-        else:
-            return f"Error ({response.status_code}): {response.text}"
-    except Exception as e:
-        return f"Error Red: {str(e)}"
+        else: return "I'm having trouble thinking right now."
+    except: return "Connection error."
 
-# --- 5. AUDIO (PACIENCIA 3s) ---
-def generar_audio_resp(text):
-    if "Error" in text: return
+# --- 5. GENERAR AUDIO (SOLO BYTES) ---
+def obtener_bytes_audio(text):
+    if "Error" in text: return None
     try:
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_synthesis_voice_name = "en-GB-RyanNeural"
-        audio_config = speechsdk.audio.AudioOutputConfig(filename="output_ghost.wav")
-        synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
+        # Usamos pull stream para obtener los bytes directamente
+        synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
         result = synthesizer.speak_text_async(text).get()
         if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            st.audio(result.audio_data, format="audio/wav")
+            return result.audio_data
     except: pass
+    return None
 
 def process_audio_file(file_path):
     try:
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_recognition_language = "en-GB"
-        # 3 segundos de espera antes de cortar
         speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "3000")
-        
         audio_config = speechsdk.audio.AudioConfig(filename=file_path)
         recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
         return recognizer.recognize_once()
     except: return None
 
-# --- 6. PROMPT INGENIERÍA ---
+# --- 6. PROMPT ---
 def get_chat_response(history_list, user_input):
-    # Formateamos el historial para que la IA entienda quién es quién
     formatted_history = ""
     for msg in history_list:
         role = "Tutor" if msg['role'] == "assistant" else "Student"
@@ -141,18 +106,12 @@ def get_chat_response(history_list, user_input):
 
     prompt = f"""
     Act as a friendly, patient British English tutor.
-    
-    CONVERSATION HISTORY:
-    {formatted_history}
-    
-    CURRENT INPUT (Student): "{user_input}"
-    
+    HISTORY: {formatted_history}
+    INPUT: "{user_input}"
     INSTRUCTIONS:
-    1. If the Student's input is incomplete or weird (due to audio errors), guess what they meant or ask for clarification politely.
-    2. Correct any grammar mistakes gently in your response.
-    3. Respond naturally to continue the conversation.
-    4. Keep your response complete but concise (2-3 sentences max).
-    5. Do not cut off your sentences.
+    1. If input is unclear, guess context gently.
+    2. Correct grammar mistakes in your reply.
+    3. Respond naturally (2-3 sentences).
     """
     return query_gemini(prompt)
 
@@ -162,14 +121,29 @@ st.title("🇬🇧 British AI Tutor")
 with st.sidebar:
     st.divider()
     if st.button("🔄 Reiniciar"):
-        st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready."}]
         st.session_state.last_processed_audio = b""
+        st.session_state.audio_buffer = None # Borramos audio pendiente
         st.session_state.manual_reset_counter += 1
-        # No borramos el modelo para no perder tiempo re-escaneando
         st.rerun()
 
-stable_key = f"recorder_main_{st.session_state.manual_reset_counter}"
+# --- PANTALLA DE CHAT ---
+# Mostramos el historial PRIMERO
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
 
+# --- REPRODUCTOR DE AUDIO PERSISTENTE 🔊 ---
+# Este bloque se ejecuta DESPUÉS del rerun, por lo que el audio se queda fijo.
+if st.session_state.audio_buffer:
+    st.write("---")
+    st.write("🔊 **Escucha la respuesta:**")
+    # Autoplay=True para que suene solo en cuanto cargue la página
+    st.audio(st.session_state.audio_buffer, format="audio/wav", autoplay=True)
+
+# --- GRABADORA ---
+st.write("---")
+stable_key = f"recorder_main_{st.session_state.manual_reset_counter}"
 st.write("👇 **Pulsa para hablar:**")
 chat_audio = audio_recorder(text="", recording_color="#ff4b4b", neutral_color="#6aa36f", icon_size="2x", key=stable_key)
 
@@ -182,21 +156,17 @@ if chat_audio and chat_audio != st.session_state.last_processed_audio:
         
         if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
             user_text = res.text
-            # Feedback visual de lo que entendió
-            st.toast(f"🗣️ Oído: {user_text}") 
-            
             st.session_state.messages.append({"role": "user", "content": user_text})
             
-            # Pasamos la lista completa de mensajes
+            # Generamos respuesta de texto
             bot_reply = get_chat_response(st.session_state.messages, user_text)
-            
             st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-            generar_audio_resp(bot_reply)
+            
+            # Generamos audio y lo GUARDAMOS en la memoria (no lo reproducimos aún)
+            audio_bytes = obtener_bytes_audio(bot_reply)
+            st.session_state.audio_buffer = audio_bytes
+            
+            # Recargamos la página para mostrar el nuevo mensaje y el audio
             st.rerun()
         else:
             st.warning("😓 No te he entendido bien. Inténtalo de nuevo.")
-
-# Mostrar chat
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.write(msg["content"])
