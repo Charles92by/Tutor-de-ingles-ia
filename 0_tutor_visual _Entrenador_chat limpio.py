@@ -1,6 +1,6 @@
 import streamlit as st
 import azure.cognitiveservices.speech as speechsdk
-import requests  # Conexión directa
+import requests
 import json
 from audio_recorder_streamlit import audio_recorder
 import os
@@ -24,29 +24,56 @@ except:
     st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. CONEXIÓN DIRECTA AL MODELO ESTÁNDAR (GEMINI PRO) 🛡️ ---
-def query_gemini_direct(prompt_text):
-    """
-    Usa 'gemini-pro' (versión 1.0). 
-    Es menos moderno que el 1.5 pero es el más estable y compatible en Europa.
-    """
-    # URL cambiada al modelo clásico "gemini-pro"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GOOGLE_API_KEY}"
+# --- 3. ESCÁNER DE MODELOS (REST API) 🕵️‍♂️ ---
+# Esta función prueba variantes específicas hasta encontrar una que Google acepte
+def find_working_model():
+    if "working_model_id" in st.session_state:
+        return st.session_state.working_model_id
+    
+    # Lista de "puertas traseras" y versiones específicas
+    candidates = [
+        "gemini-1.5-flash",          # El ideal
+        "gemini-1.5-flash-002",      # Versión específica moderna
+        "gemini-1.5-flash-001",      # Versión específica anterior
+        "gemini-1.5-flash-8b",       # Versión ligera (suele estar libre)
+        "gemini-2.0-flash-exp",      # Experimental (de tu lista)
+        "gemini-1.0-pro"             # El clásico real
+    ]
+    
+    st.sidebar.text("🔍 Escaneando modelos...")
     
     headers = {"Content-Type": "application/json"}
-    data = {
-        "contents": [{
-            "parts": [{"text": prompt_text}]
-        }],
-        "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 150
-        }
-    }
+    data = {"contents": [{"parts": [{"text": "Hi"}]}]}
     
+    for model in candidates:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GOOGLE_API_KEY}"
+            response = requests.post(url, headers=headers, data=json.dumps(data))
+            
+            # Si da 200 OK, hemos encontrado el ganador
+            if response.status_code == 200:
+                st.session_state.working_model_id = model
+                st.sidebar.success(f"✅ Conectado: {model}")
+                return model
+            # Si da 429 es que ese está lleno, seguimos buscando
+        except:
+            continue
+            
+    st.error("❌ ERROR TOTAL: Ningún modelo gratuito disponible. Crea una API Key en un PROYECTO NUEVO.")
+    st.stop()
+
+# Ejecutamos el escáner una vez y guardamos el modelo
+ACTIVE_MODEL_ID = find_working_model()
+
+def query_gemini(prompt_text):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{ACTIVE_MODEL_ID}:generateContent?key={GOOGLE_API_KEY}"
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "contents": [{"parts": [{"text": prompt_text}]}],
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 150}
+    }
     try:
         response = requests.post(url, headers=headers, data=json.dumps(data))
-        
         if response.status_code == 200:
             return response.json()['candidates'][0]['content']['parts'][0]['text']
         else:
@@ -54,7 +81,7 @@ def query_gemini_direct(prompt_text):
     except Exception as e:
         return f"Error Conexión: {str(e)}"
 
-# --- 4. FUNCIONES AUDIO (Con Paciencia 3 seg) ---
+# --- 4. FUNCIONES AUDIO (Con Paciencia 3s) ---
 def generar_audio_resp(text):
     try:
         if "Error" in text: return
@@ -72,7 +99,7 @@ def process_audio_file(file_path, reference_text=None):
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_recognition_language = "en-GB"
         
-        # 3 segundos de paciencia
+        # 3 segundos de paciencia para frases largas
         speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "3000")
         
         audio_config = speechsdk.audio.AudioConfig(filename=file_path)
@@ -99,19 +126,18 @@ def get_chat_response(history, user_input):
     User just said: "{user_input}"
     
     Instructions:
-    1. If transcription is wrong, guess the context.
+    1. If transcription is slightly wrong, guess context.
     2. Correct grammar gently.
     3. Keep it short. PLAIN TEXT ONLY.
     """
-    return query_gemini_direct(prompt)
+    return query_gemini(prompt)
 
 def get_pronunciation_tips(text, errors):
     prompt = f"User said: '{text}'. Errors: {', '.join(errors)}. Give 1 sentence with pronunciation tips (IPA)."
-    return query_gemini_direct(prompt)
+    return query_gemini(prompt)
 
 # --- 6. INTERFAZ ---
 st.title("🇬🇧 British AI Tutor")
-st.caption("🛡️ Motor: Gemini Pro (Clásico y Estable)")
 
 with st.sidebar:
     st.divider()
@@ -121,6 +147,9 @@ with st.sidebar:
         st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat."}]
         st.session_state.last_processed_audio = b""
         st.session_state.manual_reset_counter += 1
+        # Borramos el modelo guardado para re-escanear si hace falta
+        if "working_model_id" in st.session_state:
+            del st.session_state.working_model_id
         st.rerun()
 
 stable_key = f"recorder_{modo}_{st.session_state.manual_reset_counter}"
