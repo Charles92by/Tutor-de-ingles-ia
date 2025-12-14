@@ -23,11 +23,11 @@ except:
     st.error("❌ Faltan las claves en 'Secrets'.")
     st.stop()
 
-# --- 3. CONFIGURACIÓN GEMINI (CAMBIO AQUÍ) ---
+# --- 3. CONFIGURACIÓN GEMINI (VUELTA AL 2.5) ---
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
-    # CAMBIO: Usamos 1.5-flash que es más estable en la nube que el 2.5
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # VOLVEMOS AL MODELO QUE SABEMOS QUE TE FUNCIONA
+    model = genai.GenerativeModel('models/gemini-2.5-flash')
 except Exception as e:
     st.error(f"Error conectando con Gemini: {e}")
 
@@ -74,7 +74,7 @@ def process_audio_file(file_path, reference_text=None):
         st.error(f"Error Azure: {e}")
         return None
 
-# --- 5. CEREBRO IA (CAMBIO AQUÍ) ---
+# --- 5. CEREBRO IA ---
 def get_chat_response(history, user_input):
     prompt = f"""
     Eres un tutor de inglés británico.
@@ -89,9 +89,8 @@ def get_chat_response(history, user_input):
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        # CAMBIO: Mostramos el error real en pantalla roja para que sepas qué pasa
-        st.error(f"❌ Error Gemini: {e}") 
-        return f"Error técnico: {e}"
+        st.error(f"❌ Error Gemini: {e}")
+        return "I can't think right now."
 
 def get_pronunciation_tips(text, errors):
     prompt = f"Usuario dijo: '{text}'. Falló en: {', '.join(errors)}. Dame consejo breve (texto plano)."
