@@ -23,53 +23,40 @@ except:
     st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. CONEXIÓN INTELIGENTE CON MEMORIA (NO SPAM) 🧠 ---
-
-# Solo configuramos la API una vez
-try:
-    genai.configure(api_key=GOOGLE_API_KEY)
-except Exception as e:
-    st.error(f"Error Key: {e}")
-
-# Lógica de Caché: Si ya sabemos qué modelo funciona, no buscamos más.
+# --- 3. CONEXIÓN INTELIGENTE (VERSIÓN EUROPA) ---
 if "working_model_name" not in st.session_state:
-    st.sidebar.text("🔄 Buscando modelo compatible...")
-    
-    # Lista prioritaria para Europa
+    st.sidebar.text("🔄 Conectando...")
     possible_models = [
-        "models/gemini-1.5-flash",    # El más estable
-        "gemini-1.5-flash",           # Alias corto
-        "models/gemini-flash-latest", # Alias "siempre fresco"
-        "gemini-pro"                  # Respaldo viejo confiable
+        "models/gemini-flash-latest", # Prioridad Europa
+        "gemini-1.5-flash",
+        "models/gemini-1.5-flash",
+        "gemini-pro"
     ]
-    
     found_model = None
     for model_name in possible_models:
         try:
-            # Prueba de fuego: Generar 1 token
+            genai.configure(api_key=GOOGLE_API_KEY)
             test_model = genai.GenerativeModel(model_name)
             test_model.generate_content("Hi")
             found_model = model_name
-            break # ¡Encontrado! Salimos del bucle
+            break
         except:
             continue
     
     if found_model:
-        st.session_state.working_model_name = found_model # GUARDAMOS EL GANADOR
-        st.sidebar.success(f"✅ Conectado a: {found_model}")
+        st.session_state.working_model_name = found_model
+        st.sidebar.success(f"✅ {found_model}")
     else:
-        st.error("❌ BLOQUEO TOTAL: Google ha rechazado todas las conexiones. Espera 1 minuto y recarga.")
+        st.error("❌ Error de conexión con Google. Revisa tu API Key.")
         st.stop()
 
-# Instanciamos el modelo usando SIEMPRE el nombre guardado en memoria
 try:
     active_model = genai.GenerativeModel(st.session_state.working_model_name)
 except:
-    st.error("Error recuperando modelo de memoria. Recarga la página.")
-    st.stop()
+    st.session_state.clear()
+    st.rerun()
 
-
-# --- 4. FUNCIONES AUDIO ---
+# --- 4. FUNCIONES AUDIO MEJORADAS 🎧 ---
 def generar_audio_resp(text):
     try:
         if "ERROR" in text or "429" in text: return
@@ -87,6 +74,12 @@ def process_audio_file(file_path, reference_text=None):
     try:
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_recognition_language = "en-GB"
+        
+        # --- MEJORA: AUMENTAR PACIENCIA DE AZURE ---
+        # Le damos 3000ms (3 segundos) de silencio antes de cortar la frase.
+        speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "3000")
+        speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, "5000")
+        
         audio_config = speechsdk.audio.AudioConfig(filename=file_path)
         
         if reference_text:
@@ -105,16 +98,22 @@ def process_audio_file(file_path, reference_text=None):
         st.error(f"Error Azure: {e}")
         return None
 
-# --- 5. CEREBRO IA ---
+# --- 5. CEREBRO IA (MÁS COMPRENSIVO) ---
 def get_chat_response(history, user_input):
     prompt = f"""
-    You are a British English tutor.
-    Chat History: {history}
-    User says: "{user_input}"
-    Task:
-    1. Briefly correct major grammar mistakes.
-    2. Reply to continue conversation.
-    3. Keep it short. PLAIN TEXT ONLY. NO JSON.
+    You are a friendly British English tutor.
+    The user is learning, so their input might have phonetic errors or broken grammar.
+    
+    Current Conversation:
+    {history}
+    
+    User just said (Transcribed audio): "{user_input}"
+    
+    Your Task:
+    1. Try to guess the context even if the transcription is weird.
+    2. If the user made a grammar mistake, correct it gently inside your reply.
+    3. Reply naturally to keep the chat going.
+    4. Keep it short and simple. PLAIN TEXT ONLY.
     """
     try:
         response = active_model.generate_content(prompt)
@@ -138,12 +137,9 @@ with st.sidebar:
     modo = st.radio("Modo:", ["🎯 Entrenador", "💬 Conversación"])
     st.divider()
     if st.button("🔄 Reiniciar"):
-        # Limpiamos todo MENOS el modelo guardado
         guardar_modelo = st.session_state.get("working_model_name", None)
         st.session_state.clear()
-        if guardar_modelo:
-            st.session_state.working_model_name = guardar_modelo
-        
+        if guardar_modelo: st.session_state.working_model_name = guardar_modelo
         st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat."}]
         st.session_state.last_spoken_audio = ""
         st.session_state.recorder_key = 0
@@ -158,6 +154,9 @@ if modo == "🎯 Entrenador":
     audio_tr = audio_recorder(text="", recording_color="#e8b62c", neutral_color="#6aa36f", icon_size="2x", key=key_tr)
     
     if audio_tr:
+        # Check de audio
+        st.audio(audio_tr, format="audio/wav")
+        
         with open("temp_read.wav", "wb") as f: f.write(audio_tr)
         with st.spinner("Analizando..."):
             res = process_audio_file("temp_read.wav", reference_text=frase)
@@ -175,6 +174,8 @@ if modo == "🎯 Entrenador":
             else:
                 st.success("Perfect!")
                 generar_audio_resp("Excellent pronunciation!")
+        else:
+            st.warning("⚠️ No se entendió el audio. Intenta hablar más alto y claro.")
         
         st.session_state.recorder_key += 1
         st.rerun()
@@ -191,18 +192,27 @@ else:
     audio_ch = audio_recorder(text="", recording_color="#ff4b4b", neutral_color="#6aa36f", icon_size="2x", key=key_chat)
     
     if audio_ch:
+        # Reproducir lo que grabaste para verificar
+        st.caption("🔊 Tu grabación:")
+        st.audio(audio_ch, format="audio/wav")
+        
         with open("temp_chat.wav", "wb") as f: f.write(audio_ch)
         with st.spinner("Escuchando..."):
             res = process_audio_file("temp_chat.wav")
             
         if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
             user_text = res.text
-            st.session_state.messages.append({"role": "user", "content": user_text})
+            st.success(f"🗣️ Oído: '{user_text}'") # Feedback visual de lo que entendió
             
+            st.session_state.messages.append({"role": "user", "content": user_text})
             historial = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
             bot_reply = get_chat_response(historial, user_text)
-            
             st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+            
+            st.session_state.recorder_key += 1
+            st.rerun()
+        else:
+            st.warning("😓 No pude entenderte. Inténtalo de nuevo.")
             st.session_state.recorder_key += 1
             st.rerun()
 
