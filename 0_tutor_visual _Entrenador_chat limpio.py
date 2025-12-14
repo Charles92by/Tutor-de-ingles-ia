@@ -37,21 +37,24 @@ except:
     st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# --- 3. CONEXIÓN SEGURA (MODELO CLÁSICO) ---
-# Usamos 'gemini-pro' porque funciona incluso en versiones antiguas de la librería
+# --- 3. CONEXIÓN EXACTA (MODELO VERIFICADO EN TU LISTA) ---
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
-    active_model = genai.GenerativeModel('gemini-pro')
-    # Prueba silenciosa
-    # active_model.generate_content("Hi") 
+    
+    # ¡ESTE ES EL CAMBIO CLAVE! 
+    # Usamos el nombre exacto que salió en tu diagnóstico (índice 19)
+    active_model = genai.GenerativeModel('models/gemini-flash-latest')
+    
 except Exception as e:
-    st.error(f"❌ Error conectando con Gemini: {e}")
+    st.error(f"❌ Error Configuración: {e}")
     st.stop()
 
 # --- 4. FUNCIONES AUDIO ---
 def generar_audio_resp(text):
     try:
-        if "ERROR" in text: return
+        # Filtro de seguridad para no leer errores
+        if "ERROR" in text or "404" in text: return
+        
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_synthesis_voice_name = "en-GB-RyanNeural"
         audio_config = speechsdk.audio.AudioOutputConfig(filename="output_ghost.wav")
@@ -65,8 +68,8 @@ def process_audio_file(file_path, reference_text=None):
     try:
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_recognition_language = "en-GB"
-        # Damos 2 segundos de margen de silencio
-        speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "2000")
+        # 3 segundos de paciencia
+        speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "3000")
         
         audio_config = speechsdk.audio.AudioConfig(filename=file_path)
         recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
@@ -90,7 +93,7 @@ def get_chat_response(history, user_input):
     You are a British English tutor. User said: "{user_input}".
     History: {history}
     1. Reply naturally in English.
-    2. Keep it simple.
+    2. Keep it simple and helpful.
     """
     try: 
         return active_model.generate_content(prompt).text
@@ -114,7 +117,6 @@ with st.sidebar:
         st.session_state.manual_reset_counter += 1
         st.rerun()
 
-# Clave estable para el botón
 stable_key = f"recorder_{modo}_{st.session_state.manual_reset_counter}"
 
 if modo == "🎯 Entrenador":
