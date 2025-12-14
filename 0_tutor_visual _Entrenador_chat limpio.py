@@ -7,13 +7,16 @@ import os
 # --- 1. CONFIGURACIÓN INICIAL Y ESTADO ---
 st.set_page_config(page_title="British AI Tutor", page_icon="🇬🇧")
 
-# Inicializar variables de estado si no existen
+# Inicializar variables de estado
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat."}]
-if "last_processed_audio" not in st.session_state:
-    st.session_state.last_processed_audio = b""
 if "last_spoken_audio" not in st.session_state:
     st.session_state.last_spoken_audio = ""
+
+# --- LA SOLUCIÓN AL BOTÓN DESAPARECIDO ---
+# Usamos un contador para forzar que el botón de grabar se renueve siempre
+if "recorder_key" not in st.session_state:
+    st.session_state.recorder_key = 0
 
 # --- 2. GESTIÓN DE CLAVES ---
 try:
@@ -34,7 +37,7 @@ except Exception as e:
 # --- 4. FUNCIONES DE AUDIO ---
 
 def generar_audio_resp(text):
-    """Genera audio y lo reproduce (Versión Cloud)"""
+    """Genera audio y lo reproduce"""
     try:
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_synthesis_voice_name = "en-GB-RyanNeural"
@@ -104,10 +107,10 @@ with st.sidebar:
     modo = st.radio("Modo:", ["🎯 Entrenador", "💬 Conversación"])
     
     st.divider()
-    if st.button("🔄 Reiniciar Conversación"):
+    if st.button("🔄 Reiniciar Todo"):
         st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat."}]
-        st.session_state.last_processed_audio = b""
         st.session_state.last_spoken_audio = ""
+        st.session_state.recorder_key += 1 # Forzar nuevo botón
         st.rerun()
 
 # === MODO 1: ENTRENADOR ===
@@ -116,41 +119,40 @@ if modo == "🎯 Entrenador":
     frase = st.selectbox("Frase:", ["I would like a bottle of water please.", "The weather in London is unpredictable."])
     st.info(f"📖 Lee: **{frase}**")
     
-    # Grabador Entrenador
-    audio_bytes_tr = audio_recorder(text="", recording_color="#e8b62c", neutral_color="#6aa36f", icon_size="2x", key="rec_trainer")
+    # Usamos la clave dinámica
+    key_entrenador = f"trainer_{st.session_state.recorder_key}"
+    audio_bytes_tr = audio_recorder(text="", recording_color="#e8b62c", neutral_color="#6aa36f", icon_size="2x", key=key_entrenador)
     
     if audio_bytes_tr:
-        # Lógica simple para entrenador (no necesita memoria compleja)
         with open("temp_reading.wav", "wb") as f:
             f.write(audio_bytes_tr)
         
-        # Solo procesamos si no acabamos de procesar este mismo audio
-        if st.session_state.last_processed_audio != audio_bytes_tr:
-            st.session_state.last_processed_audio = audio_bytes_tr
+        with st.spinner("Analizando..."):
+            res = process_audio_file("temp_reading.wav", reference_text=frase)
             
-            with st.spinner("Analizando..."):
-                res = process_audio_file("temp_reading.wav", reference_text=frase)
-                
-            if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
-                assess_res = speechsdk.PronunciationAssessmentResult(res)
-                score = assess_res.accuracy_score
-                st.metric("Nota", f"{score}/100")
-                
-                errores = [w.word for w in assess_res.words if w.accuracy_score < 80 and w.error_type != "None"]
-                if errores:
-                    st.write(f"⚠️ Errores: {', '.join(errores)}")
-                    feedback = get_pronunciation_tips(frase, errores)
-                    st.info(feedback)
-                    generar_audio_resp(feedback)
-                else:
-                    st.success("Perfect!")
-                    generar_audio_resp("Excellent pronunciation!")
+        if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
+            assess_res = speechsdk.PronunciationAssessmentResult(res)
+            score = assess_res.accuracy_score
+            st.metric("Nota", f"{score}/100")
+            
+            errores = [w.word for w in assess_res.words if w.accuracy_score < 80 and w.error_type != "None"]
+            if errores:
+                st.write(f"⚠️ Errores: {', '.join(errores)}")
+                feedback = get_pronunciation_tips(frase, errores)
+                st.info(feedback)
+                generar_audio_resp(feedback)
+            else:
+                st.success("Perfect!")
+                generar_audio_resp("Excellent pronunciation!")
+        
+        # TRUCO FINAL: Cambiamos la clave para que al recargar salga un botón NUEVO
+        st.session_state.recorder_key += 1
+        st.rerun()
 
 # === MODO 2: CONVERSACIÓN ===
 else:
     st.subheader("Chat Británico")
     
-    # 1. Renderizar historial primero
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
@@ -158,45 +160,37 @@ else:
     st.write("---")
     st.write("👇 **Pulsa para hablar:**")
     
-    # 2. Renderizar Grabador SIEMPRE (fuera de condicionales)
-    chat_audio = audio_recorder(text="", recording_color="#ff4b4b", neutral_color="#6aa36f", icon_size="2x", key="rec_chat")
+    # Usamos la clave dinámica aquí también
+    key_chat = f"chat_{st.session_state.recorder_key}"
+    chat_audio = audio_recorder(text="", recording_color="#ff4b4b", neutral_color="#6aa36f", icon_size="2x", key=key_chat)
     
-    # 3. Lógica de Procesamiento
-    if chat_audio is not None and len(chat_audio) > 0:
-        
-        # EL FIX DEL BUCLE: Comparamos con el último audio procesado
-        if chat_audio != st.session_state.last_processed_audio:
+    if chat_audio:
+        with open("temp_chat.wav", "wb") as f:
+            f.write(chat_audio)
             
-            # Guardamos INMEDIATAMENTE para que en el siguiente rerun no entre aquí
-            st.session_state.last_processed_audio = chat_audio
+        with st.spinner("Escuchando..."):
+            res = process_audio_file("temp_chat.wav")
             
-            with open("temp_chat.wav", "wb") as f:
-                f.write(chat_audio)
-                
-            with st.spinner("Escuchando..."):
-                res = process_audio_file("temp_chat.wav")
-                
-            if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
-                user_text = res.text
-                
-                # Añadir usuario
-                st.session_state.messages.append({"role": "user", "content": user_text})
-                
-                # Pensar respuesta
-                historial = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
-                bot_reply = get_chat_response(historial, user_text)
-                
-                # Añadir bot
-                st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-                
-                # RECARGAR LA PÁGINA PARA MOSTRAR MENSAJES
-                st.rerun()
+        if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
+            user_text = res.text
+            
+            # Guardamos mensajes
+            st.session_state.messages.append({"role": "user", "content": user_text})
+            
+            # Pensamos respuesta
+            historial = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
+            bot_reply = get_chat_response(historial, user_text)
+            st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+            
+            # IMPORTANTE: Cambiamos la clave para destruir el botón usado y poner uno nuevo
+            st.session_state.recorder_key += 1
+            st.rerun()
 
-    # 4. Reproducir audio (solo si hay un mensaje nuevo del asistente)
+    # Reproducir audio del último mensaje (si es del bot y no se ha dicho ya)
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
         last_msg = st.session_state.messages[-1]["content"]
         
-        # Evitar repetir el audio si ya se habló
+        # Comprobación simple para no repetir
         if st.session_state.last_spoken_audio != last_msg:
             st.session_state.last_spoken_audio = last_msg
             generar_audio_resp(last_msg)
