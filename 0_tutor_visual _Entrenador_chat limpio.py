@@ -1,57 +1,64 @@
 import streamlit as st
 import azure.cognitiveservices.speech as speechsdk
 import google.generativeai as genai
-from audio_recorder_streamlit import audio_recorder # Nueva librería para grabar en web
+from audio_recorder_streamlit import audio_recorder
 import os
 
-# --- CLAVES SEGURAS (Desde Streamlit Secrets) ---
-# Si da error en local, asegúrate de tener .streamlit/secrets.toml
+# --- 1. GESTIÓN DE CLAVES SEGURAS ---
 try:
     AZURE_KEY = st.secrets["AZURE_KEY"]
     AZURE_REGION = st.secrets["AZURE_REGION"]
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
-    st.error("❌ No se encontraron las claves secretas. Configúralas en Streamlit Cloud.")
+    st.error("❌ No se encontraron las claves. Configura los 'Secrets' en Streamlit Cloud.")
     st.stop()
 
-# Configuración de Gemini
+# --- 2. CONFIGURACIÓN GEMINI ---
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
     model = genai.GenerativeModel('models/gemini-2.5-flash')
-except:
-    st.warning("Error conectando con Gemini.")
+except Exception as e:
+    st.warning(f"Error conectando con Gemini: {e}")
 
 st.set_page_config(page_title="British AI Tutor", page_icon="🇬🇧")
 
-# --- FUNCIONES DE AUDIO (ADAPTADAS A LA NUBE) ---
+# --- 3. FUNCIONES DE AUDIO (CORREGIDAS PARA LA NUBE) ---
 
 def play_audio_response(text):
-    """Genera audio con Azure y lo reproduce en el navegador"""
-    speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
-    speech_config.speech_synthesis_voice_name = "en-GB-RyanNeural"
-    
-    # IMPORTANTE: Configuramos salida nula para que no busque altavoces en el servidor
-    audio_config = speechsdk.audio.AudioOutputConfig(use_default_speaker=False)
-    
-    synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
-    
-    # Sintetizar a memoria
-    result = synthesizer.speak_text_async(text).get()
-    
-    if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-        # Reproducir en el navegador del usuario
-        st.audio(result.audio_data, format="audio/wav")
+    """
+    Genera audio con Azure y lo reproduce en el navegador.
+    FIX: Usamos 'filename' para evitar que busque altavoces en el servidor.
+    """
+    try:
+        speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
+        speech_config.speech_synthesis_voice_name = "en-GB-RyanNeural"
+        
+        # --- EL TRUCO PARA QUE FUNCIONE EN LA NUBE ---
+        # Enviamos el audio a un archivo "fantasma" para que no requiera tarjeta de sonido.
+        audio_config = speechsdk.audio.AudioOutputConfig(filename="output_ghost.wav")
+        
+        synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
+        
+        # Sintetizar (El resultado contiene los bytes de audio en memoria)
+        result = synthesizer.speak_text_async(text).get()
+        
+        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+            # Reproducir usando los datos de memoria, no el archivo
+            st.audio(result.audio_data, format="audio/wav")
+            
+    except Exception as e:
+        st.error(f"Error al generar audio: {e}")
 
 def process_audio_file(file_path, reference_text=None):
-    """Procesa un archivo de audio WAV con Azure"""
+    """Procesa el archivo de audio grabado por el usuario"""
     speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
     speech_config.speech_recognition_language = "en-GB"
     
-    # Leemos desde ARCHIVO, no desde micrófono
+    # Leemos desde el archivo temporal grabado
     audio_config = speechsdk.audio.AudioConfig(filename=file_path)
     
     if reference_text:
-        # MODO EVALUACIÓN
+        # MODO EVALUACIÓN (Con nota)
         pronunciation_config = speechsdk.PronunciationAssessmentConfig(
             reference_text=reference_text,
             grading_system=speechsdk.PronunciationAssessmentGradingSystem.HundredMark,
@@ -61,31 +68,46 @@ def process_audio_file(file_path, reference_text=None):
         pronunciation_config.apply_to(recognizer)
         return recognizer.recognize_once()
     else:
-        # MODO CONVERSACIÓN (Solo transcripción)
+        # MODO CHAT (Solo transcripción)
         recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
         return recognizer.recognize_once()
 
-# --- FUNCIONES DE GEMINI ---
+# --- 4. CEREBRO IA (GEMINI) ---
+
 def get_chat_response(history, user_input):
     prompt = f"""
-    Eres un amigo británico charlando. 
+    Eres un tutor de inglés británico charlando amigablemente. 
     Historial: {history}
-    Usuario: "{user_input}"
+    Usuario dice: "{user_input}"
+    
     Instrucciones:
-    1. Si hay error gramatical grave, corrígelo amablemente.
-    2. Responde para seguir la charla.
-    3. IMPORTANTE: Responde SOLO texto plano. NO uses JSON ni llaves.
+    1. Si hay errores gramaticales graves, corrígelos brevemente primero.
+    2. Responde a la pregunta para seguir la conversación.
+    3. IMPORTANTE: Responde SOLO texto plano. NO uses JSON, ni markdown, ni símbolos raros.
     """
-    response = model.generate_content(prompt)
-    return response.text
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except:
+        return "Sorry, I'm having trouble thinking right now."
 
 def get_pronunciation_tips(text, errors):
-    prompt = f"Usuario dijo: '{text}'. Falló en: {errors}. Dame tips breves de pronunciación (IPA y posición lengua) en texto plano."
-    response = model.generate_content(prompt)
-    return response.text
+    prompt = f"""
+    Usuario dijo: '{text}'. 
+    Falló en estas palabras: {', '.join(errors)}. 
+    Dame un consejo muy breve sobre cómo pronunciarlas bien (posición de lengua/labios).
+    Usa texto plano.
+    """
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except:
+        return "Check your pronunciation carefully."
 
-# --- INTERFAZ ---
-st.title("🇬🇧 British AI Tutor (Cloud Version)")
+# --- 5. INTERFAZ GRÁFICA ---
+
+st.title("🇬🇧 British AI Tutor")
+st.markdown("Tu entrenador de acento personal en la nube.")
 
 with st.sidebar:
     st.header("Modo de Estudio")
@@ -93,46 +115,53 @@ with st.sidebar:
 
 # === MODO 1: ENTRENADOR ===
 if modo == "🎯 Entrenador de Pronunciación":
-    st.subheader("Modo Lectura")
-    frase = st.selectbox("Elige frase:", ["I would like a bottle of water please.", "The weather in London is unpredictable."])
-    st.info(f"Lee: **{frase}**")
+    st.subheader("Entrenador de Lectura")
+    frase = st.selectbox("Elige frase:", [
+        "I would like a bottle of water please.",
+        "The weather in London is unpredictable.",
+        "Can you tell me the way to the station?",
+        "It's better to be safe than sorry."
+    ])
+    st.info(f"📖 Lee en voz alta: **{frase}**")
     
-    st.write("👇 Pulsa el micrófono para grabar:")
-    # GRABADOR WEB
-    audio_bytes = audio_recorder(text="", recording_color="#e8b62c", neutral_color="#6aa36f", icon_size="2x")
+    st.write("👇 Pulsa el micro para grabar:")
+    # Widget de grabación web
+    audio_bytes = audio_recorder(text="", recording_color="#e8b62c", neutral_color="#6aa36f", icon_size="2x", key="recorder_trainer")
     
     if audio_bytes:
-        # Guardar audio temporal
+        # Guardar audio temporalmente
         with open("temp_reading.wav", "wb") as f:
             f.write(audio_bytes)
         
-        with st.spinner("Analizando en la nube..."):
+        with st.spinner("Analizando pronunciación..."):
             res = process_audio_file("temp_reading.wav", reference_text=frase)
             
         if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
             assess_res = speechsdk.PronunciationAssessmentResult(res)
             score = assess_res.accuracy_score
-            st.metric("Precisión", f"{score}/100")
+            st.metric("Puntuación", f"{score}/100")
             
-            if score < 70: st.warning("Mejorable.")
-            else: st.success("¡Good job!")
+            if score < 70: st.warning("Sigue practicando la articulación.")
+            else: st.success("¡Excelente trabajo!")
             
+            # Análisis de errores
             errores = [w.word for w in assess_res.words if w.accuracy_score < 80 and w.error_type != "None"]
             if errores:
-                st.write(f"⚠️ Errores: {', '.join(errores)}")
+                st.write(f"⚠️ Atención a: {', '.join(errores)}")
                 feedback = get_pronunciation_tips(frase, errores)
                 st.info(feedback)
-                play_audio_response(feedback) # Audio en navegador
-        elif res:
-             st.error("No se entendió el audio.")
+                play_audio_response(feedback)
+        else:
+             st.error("No pude escucharte bien. Intenta acercarte al micrófono.")
 
 # === MODO 2: CONVERSACIÓN ===
 else:
     st.subheader("Chat Británico")
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat. How are you?"}]
 
+    # Mostrar historial
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
@@ -140,11 +169,11 @@ else:
     st.divider()
     st.write("👇 Graba tu respuesta:")
     
-    # GRABADOR WEB PARA CHAT
-    # Usamos una key diferente para que no se mezcle con el otro grabador
-    chat_audio = audio_recorder(text="", recording_color="#ff4b4b", neutral_color="#6aa36f", key="chat_recorder")
+    # Widget de grabación para chat (Key distinta para no mezclar)
+    chat_audio = audio_recorder(text="", recording_color="#ff4b4b", neutral_color="#6aa36f", icon_size="2x", key="recorder_chat")
     
     if chat_audio:
+        # Guardar audio temporal
         with open("temp_chat.wav", "wb") as f:
             f.write(chat_audio)
             
@@ -154,20 +183,24 @@ else:
         if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
             user_text = res.text
             
-            # Evitar bucle si es el mismo audio de antes
-            if st.session_state.messages[-1]["content"] != user_text:
+            # Evitar repetir el mismo mensaje si el usuario no ha grabado nuevo
+            last_user_msg = st.session_state.messages[-1]["content"] if st.session_state.messages else ""
+            
+            if user_text != last_user_msg:
+                # 1. Guardar mensaje usuario
                 st.session_state.messages.append({"role": "user", "content": user_text})
                 
-                # Obtener respuesta IA
+                # 2. Pensar respuesta
                 historial = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
                 bot_reply = get_chat_response(historial, user_text)
                 
+                # 3. Guardar respuesta bot
                 st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-                st.rerun()
+                
+                st.rerun() # Recargar para mostrar los mensajes nuevos
 
-    # Reproducir el último mensaje del bot si es nuevo
+    # Reproducir audio del último mensaje del bot (solo si es reciente)
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
-        # Pequeño truco para que no lo repita infinitamente al recargar
-        if "last_spoken" not in st.session_state or st.session_state["last_spoken"] != st.session_state.messages[-1]["content"]:
-            play_audio_response(st.session_state.messages[-1]["content"])
-            st.session_state["last_spoken"] = st.session_state.messages[-1]["content"]
+        last_msg = st.session_state.messages[-1]["content"]
+        if "last_spoken_audio" not in st.session_state or st.session_state["last_spoken_audio"] != last_msg:
+            play_audio
