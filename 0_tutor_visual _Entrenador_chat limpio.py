@@ -1,58 +1,171 @@
 import streamlit as st
+import azure.cognitiveservices.speech as speechsdk
 import google.generativeai as genai
+from audio_recorder_streamlit import audio_recorder
+import os
 
-st.title("🛠️ Diagnóstico de Reparación")
+# --- 1. CONFIGURACIÓN INICIAL ---
+st.set_page_config(page_title="British AI Tutor", page_icon="🇬🇧")
 
-# 1. REVISAR SI LA CLAVE EXISTE
-st.subheader("Paso 1: Verificando Clave Secreta")
+if "messages" not in st.session_state:
+    st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat."}]
+if "last_spoken_audio" not in st.session_state:
+    st.session_state.last_spoken_audio = ""
+if "recorder_key" not in st.session_state:
+    st.session_state.recorder_key = 0
+
+# --- 2. CLAVES ---
 try:
-    mi_clave = st.secrets["GOOGLE_API_KEY"]
-    # Mostramos solo las primeras 4 letras para ver si la lee bien
-    st.success(f"✅ Clave detectada. Empieza por: '{mi_clave[:4]}...'")
-    genai.configure(api_key=mi_clave)
-except Exception as e:
-    st.error(f"❌ ERROR: No se puede leer la clave 'GOOGLE_API_KEY' en Secrets. {e}")
+    AZURE_KEY = st.secrets["AZURE_KEY"]
+    AZURE_REGION = st.secrets["AZURE_REGION"]
+    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+except:
+    st.error("❌ ERROR: Faltan las claves en Secrets.")
     st.stop()
 
-# 2. REVISAR VERSIÓN DE LA LIBRERÍA
-st.subheader("Paso 2: Versión del Sistema")
+# --- 3. CONEXIÓN GEMINI (DIRIGIDA AL MODELO QUE SÍ TIENES) ---
 try:
-    version = genai.__version__
-    st.info(f"Versión instalada de google-generativeai: {version}")
-    if version < "0.8.3":
-        st.warning("⚠️ ALERTA: La versión es antigua. Necesitas >=0.8.3")
-    else:
-        st.success("✅ Versión correcta.")
-except:
-    st.warning("No se pudo detectar la versión.")
-
-# 3. LISTAR QUÉ MODELOS VE GOOGLE
-st.subheader("Paso 3: Preguntando a Google '¿Qué modelos tienes?'")
-try:
-    st.write("Conectando con Google Cloud...")
-    # Esto pide la lista oficial de modelos disponibles para TU clave
-    modelos_disponibles = []
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            modelos_disponibles.append(m.name)
+    genai.configure(api_key=GOOGLE_API_KEY)
     
-    if modelos_disponibles:
-        st.success("✅ Conexión establecida. Modelos disponibles:")
-        st.json(modelos_disponibles)
-    else:
-        st.error("❌ Conectó, pero la lista de modelos está vacía (¿Problema de permisos?).")
-
+    # ¡AQUÍ ESTÁ LA CLAVE! Usamos el nombre exacto que salió en tu diagnóstico
+    model = genai.GenerativeModel('models/gemini-2.5-flash')
+    
 except Exception as e:
-    st.error(f"❌ ERROR DE CONEXIÓN: {e}")
+    st.error(f"❌ Error configuración Gemini: {e}")
 
-# 4. PRUEBA FINAL
-st.subheader("Paso 4: Intento de generación")
-try:
-    # Probamos con el modelo más básico que exista en la lista
-    modelo_a_usar = 'gemini-1.5-flash'
-    st.write(f"Intentando generar con: {modelo_a_usar}...")
-    model = genai.GenerativeModel(modelo_a_usar)
-    response = model.generate_content("Hello, simply say 'OK'.")
-    st.success(f"✅ ¡FUNCIONA! Respuesta: {response.text}")
-except Exception as e:
-    st.error(f"❌ Falló la generación: {e}")
+# --- 4. FUNCIONES AUDIO ---
+def generar_audio_resp(text):
+    try:
+        speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
+        speech_config.speech_synthesis_voice_name = "en-GB-RyanNeural"
+        audio_config = speechsdk.audio.AudioOutputConfig(filename="output_ghost.wav")
+        synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
+        result = synthesizer.speak_text_async(text).get()
+        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+            st.audio(result.audio_data, format="audio/wav")
+    except Exception as e:
+        st.error(f"Error Audio: {e}")
+
+def process_audio_file(file_path, reference_text=None):
+    try:
+        speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
+        speech_config.speech_recognition_language = "en-GB"
+        audio_config = speechsdk.audio.AudioConfig(filename=file_path)
+        
+        if reference_text:
+            pronunciation_config = speechsdk.PronunciationAssessmentConfig(
+                reference_text=reference_text,
+                grading_system=speechsdk.PronunciationAssessmentGradingSystem.HundredMark,
+                granularity=speechsdk.PronunciationAssessmentGranularity.Phoneme
+            )
+            recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
+            pronunciation_config.apply_to(recognizer)
+            return recognizer.recognize_once()
+        else:
+            recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
+            return recognizer.recognize_once()
+    except Exception as e:
+        st.error(f"Error Azure: {e}")
+        return None
+
+# --- 5. CEREBRO IA ---
+def get_chat_response(history, user_input):
+    prompt = f"""
+    You are a British English tutor.
+    Chat History: {history}
+    User says: "{user_input}"
+    Task:
+    1. Briefly correct major grammar mistakes.
+    2. Reply to continue conversation.
+    3. PLAIN TEXT ONLY. NO JSON.
+    """
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        st.error(f"⚠️ Error Gemini Generación: {e}")
+        return "I can't think right now."
+
+def get_pronunciation_tips(text, errors):
+    prompt = f"User said: '{text}'. Errors: {', '.join(errors)}. Give brief pronunciation tips (IPA)."
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return "Check pronunciation."
+
+# --- 6. INTERFAZ ---
+st.title("🇬🇧 British AI Tutor")
+
+with st.sidebar:
+    st.divider()
+    modo = st.radio("Modo:", ["🎯 Entrenador", "💬 Conversación"])
+    st.divider()
+    if st.button("🔄 Reiniciar"):
+        st.session_state.messages = [{"role": "assistant", "content": "Hello! I'm ready to chat."}]
+        st.session_state.last_spoken_audio = ""
+        st.session_state.recorder_key += 1
+        st.rerun()
+
+if modo == "🎯 Entrenador":
+    st.subheader("Entrenador de Lectura")
+    frase = st.selectbox("Frase:", ["I would like a bottle of water please.", "The weather in London is unpredictable."])
+    st.info(f"📖 Lee: **{frase}**")
+    
+    key_tr = f"tr_{st.session_state.recorder_key}"
+    audio_tr = audio_recorder(text="", recording_color="#e8b62c", neutral_color="#6aa36f", icon_size="2x", key=key_tr)
+    
+    if audio_tr:
+        with open("temp_read.wav", "wb") as f: f.write(audio_tr)
+        with st.spinner("Analizando..."):
+            res = process_audio_file("temp_read.wav", reference_text=frase)
+            
+        if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
+            assess = speechsdk.PronunciationAssessmentResult(res)
+            st.metric("Nota", f"{assess.accuracy_score}/100")
+            errores = [w.word for w in assess.words if w.accuracy_score < 80 and w.error_type != "None"]
+            
+            if errores:
+                st.write(f"⚠️ Errores: {', '.join(errores)}")
+                feedback = get_pronunciation_tips(frase, errores)
+                st.info(feedback)
+                generar_audio_resp(feedback)
+            else:
+                st.success("Perfect!")
+                generar_audio_resp("Excellent pronunciation!")
+        
+        st.session_state.recorder_key += 1
+        st.rerun()
+
+else:
+    st.subheader("Chat Británico")
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+            
+    st.write("---")
+    st.write("👇 **Pulsa para hablar:**")
+    key_chat = f"ch_{st.session_state.recorder_key}"
+    audio_ch = audio_recorder(text="", recording_color="#ff4b4b", neutral_color="#6aa36f", icon_size="2x", key=key_chat)
+    
+    if audio_ch:
+        with open("temp_chat.wav", "wb") as f: f.write(audio_ch)
+        with st.spinner("Escuchando..."):
+            res = process_audio_file("temp_chat.wav")
+            
+        if res and res.reason == speechsdk.ResultReason.RecognizedSpeech:
+            user_text = res.text
+            st.session_state.messages.append({"role": "user", "content": user_text})
+            
+            historial = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
+            bot_reply = get_chat_response(historial, user_text)
+            st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+            
+            st.session_state.recorder_key += 1
+            st.rerun()
+
+    if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
+        last_msg = st.session_state.messages[-1]["content"]
+        if st.session_state.last_spoken_audio != last_msg:
+            st.session_state.last_spoken_audio = last_msg
+            generar_audio_resp(last_msg)
