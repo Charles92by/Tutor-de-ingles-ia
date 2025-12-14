@@ -20,22 +20,22 @@ try:
     AZURE_REGION = st.secrets["AZURE_REGION"]
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 except:
-    st.error("❌ ERROR: Faltan las claves en Secrets.")
+    st.error("❌ Faltan claves en Secrets.")
     st.stop()
 
-# --- 3. CONEXIÓN GEMINI (DIRIGIDA AL MODELO QUE SÍ TIENES) ---
+# --- 3. CONEXIÓN GEMINI (MODELO 2.0 FLASH - MÁS ESTABLE) ---
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
-    
-    # ¡AQUÍ ESTÁ LA CLAVE! Usamos el nombre exacto que salió en tu diagnóstico
-    model = genai.GenerativeModel('models/gemini-2.5-flash')
-    
+    # Usamos el 2.0 que apareció confirmado en tu diagnóstico
+    model = genai.GenerativeModel('models/gemini-2.0-flash')
 except Exception as e:
-    st.error(f"❌ Error configuración Gemini: {e}")
+    st.error(f"❌ Error al configurar Gemini: {e}")
 
 # --- 4. FUNCIONES AUDIO ---
 def generar_audio_resp(text):
     try:
+        if "ERROR:" in text: return # No leer errores técnicos en voz alta
+        
         speech_config = speechsdk.SpeechConfig(subscription=AZURE_KEY, region=AZURE_REGION)
         speech_config.speech_synthesis_voice_name = "en-GB-RyanNeural"
         audio_config = speechsdk.audio.AudioOutputConfig(filename="output_ghost.wav")
@@ -68,7 +68,7 @@ def process_audio_file(file_path, reference_text=None):
         st.error(f"Error Azure: {e}")
         return None
 
-# --- 5. CEREBRO IA ---
+# --- 5. CEREBRO IA (SIN MÁSCARAS) ---
 def get_chat_response(history, user_input):
     prompt = f"""
     You are a British English tutor.
@@ -83,8 +83,8 @@ def get_chat_response(history, user_input):
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        st.error(f"⚠️ Error Gemini Generación: {e}")
-        return "I can't think right now."
+        # AQUÍ ESTÁ EL CAMBIO: El error se devuelve como texto del chat
+        return f"ERROR: {str(e)}"
 
 def get_pronunciation_tips(text, errors):
     prompt = f"User said: '{text}'. Errors: {', '.join(errors)}. Give brief pronunciation tips (IPA)."
@@ -92,7 +92,7 @@ def get_pronunciation_tips(text, errors):
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return "Check pronunciation."
+        return f"Error tips: {str(e)}"
 
 # --- 6. INTERFAZ ---
 st.title("🇬🇧 British AI Tutor")
@@ -157,8 +157,9 @@ else:
             user_text = res.text
             st.session_state.messages.append({"role": "user", "content": user_text})
             
-            historial = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
-            bot_reply = get_chat_response(historial, user_text)
+            # Generar respuesta
+            bot_reply = get_chat_response("", user_text) # Historial simplificado para prueba
+            
             st.session_state.messages.append({"role": "assistant", "content": bot_reply})
             
             st.session_state.recorder_key += 1
